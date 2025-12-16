@@ -1,0 +1,637 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Resume ↔ Job Matching System</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+
+        .header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+        }
+
+        .header p {
+            opacity: 0.9;
+            font-size: 1.1em;
+        }
+
+        .tabs {
+            display: flex;
+            background: #f5f5f5;
+            border-bottom: 2px solid #ddd;
+        }
+
+        .tab {
+            flex: 1;
+            padding: 20px;
+            text-align: center;
+            cursor: pointer;
+            background: transparent;
+            border: none;
+            font-size: 1.1em;
+            font-weight: 600;
+            color: #666;
+            transition: all 0.3s;
+        }
+
+        .tab:hover {
+            background: #e0e0e0;
+        }
+
+        .tab.active {
+            background: white;
+            color: #667eea;
+            border-bottom: 3px solid #667eea;
+        }
+
+        .content {
+            padding: 40px;
+        }
+
+        .mode-content {
+            display: none;
+        }
+
+        .mode-content.active {
+            display: block;
+        }
+
+        .form-group {
+            margin-bottom: 25px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 600;
+            color: #333;
+        }
+
+        .form-group input[type="file"],
+        .form-group input[type="text"],
+        .form-group textarea {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #ddd;
+            border-radius: 8px;
+            font-size: 1em;
+            transition: border-color 0.3s;
+        }
+
+        .form-group input[type="file"] {
+            padding: 8px;
+        }
+
+        .form-group input:focus,
+        .form-group textarea:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .form-group textarea {
+            min-height: 120px;
+            resize: vertical;
+        }
+
+        .btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 15px 40px;
+            font-size: 1.1em;
+            font-weight: 600;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+            width: 100%;
+        }
+
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(102, 126, 234, 0.4);
+        }
+
+        .btn:active {
+            transform: translateY(0);
+        }
+
+        .btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 20px;
+        }
+
+        .loading.active {
+            display: block;
+        }
+
+        .spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #667eea;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 10px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .error {
+            display: none;
+            background: #fee;
+            color: #c33;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            border-left: 4px solid #c33;
+        }
+
+        .error.active {
+            display: block;
+        }
+
+        .results {
+            display: none;
+            margin-top: 30px;
+        }
+
+        .results.active {
+            display: block;
+        }
+
+        .results-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+
+        .results-header h2 {
+            color: #333;
+        }
+
+        .export-btn {
+            background: #28a745;
+            padding: 10px 20px;
+            font-size: 0.9em;
+        }
+
+        .results-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+            background: white;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+
+        .results-table th {
+            background: #667eea;
+            color: white;
+            padding: 15px;
+            text-align: left;
+            font-weight: 600;
+        }
+
+        .results-table td {
+            padding: 15px;
+            border-bottom: 1px solid #eee;
+        }
+
+        .results-table tr:hover {
+            background: #f8f9fa;
+        }
+
+        .results-table tr:last-child td {
+            border-bottom: none;
+        }
+
+        .score {
+            font-weight: 600;
+            color: #28a745;
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 0.85em;
+            margin: 2px;
+            background: #e3f2fd;
+            color: #1976d2;
+        }
+
+        .info-section {
+            margin-top: 15px;
+            padding: 10px;
+            background: #f8f9fa;
+            border-radius: 6px;
+            font-size: 0.9em;
+        }
+
+        .info-section strong {
+            color: #667eea;
+        }
+
+        .info-section ul {
+            margin-left: 20px;
+            margin-top: 5px;
+        }
+
+        .info-section li {
+            margin: 3px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🔄 Resume ↔ Job Matching</h1>
+            <p>AI-Powered Matching System with AWS Bedrock & OpenSearch</p>
+        </div>
+
+        <div class="tabs">
+            <button class="tab active" onclick="switchMode('modeA')">โหมด A: Resume → Jobs</button>
+            <button class="tab" onclick="switchMode('modeB')">โหมด B: Job → Resumes</button>
+        </div>
+
+        <div class="content">
+            <!-- Error Message -->
+            <div class="error" id="errorMessage"></div>
+
+            <!-- Mode A: Resume → Jobs -->
+            <div id="modeA" class="mode-content active">
+                <h2>ค้นหาตำแหน่งงานที่เหมาะกับ Resume ของคุณ</h2>
+                <form id="formModeA" onsubmit="handleModeA(event)">
+                    <div class="form-group">
+                        <label for="resumeFileA">อัปโหลด Resume (PDF/DOCX/TXT)</label>
+                        <input type="file" id="resumeFileA" accept=".pdf,.docx,.txt" required>
+                    </div>
+                    <button type="submit" class="btn" id="btnModeA">🔍 Find Top 10 Jobs</button>
+                </form>
+            </div>
+
+            <!-- Mode B: Job → Resumes -->
+            <div id="modeB" class="mode-content">
+                <h2>ค้นหา Resume ที่เหมาะกับตำแหน่งงาน</h2>
+                <form id="formModeB" onsubmit="handleModeB(event)">
+                    <div class="form-group">
+                        <label for="jobDescription">Job Description</label>
+                        <textarea id="jobDescription" placeholder="กรอกคำอธิบายตำแหน่งงาน หรือ Job ID (ถ้ามี)"></textarea>
+                    </div>
+                    <div class="form-group">
+                        <label for="resumeFilesB">อัปโหลด Resumes หลายไฟล์ (PDF/DOCX/TXT)</label>
+                        <input type="file" id="resumeFilesB" accept=".pdf,.docx,.txt" multiple required>
+                    </div>
+                    <button type="submit" class="btn" id="btnModeB">🔍 Find Top 10 Resumes</button>
+                </form>
+            </div>
+
+            <!-- Loading -->
+            <div class="loading" id="loading">
+                <div class="spinner"></div>
+                <p>กำลังประมวลผล...</p>
+            </div>
+
+            <!-- Results -->
+            <div class="results" id="results">
+                <div class="results-header">
+                    <h2>ผลลัพธ์</h2>
+                    <button class="btn export-btn" onclick="exportResults()">📥 Export JSON</button>
+                </div>
+                <div id="resultsContent"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE_URL = 'http://localhost:8000/api';
+        let currentResults = null;
+        let currentMode = 'modeA';
+
+        function switchMode(mode) {
+            currentMode = mode;
+            // Update tabs
+            document.querySelectorAll('.tab').forEach(tab => tab.classList.remove('active'));
+            event.target.classList.add('active');
+            
+            // Update content
+            document.querySelectorAll('.mode-content').forEach(content => content.classList.remove('active'));
+            document.getElementById(mode).classList.add('active');
+            
+            // Clear results
+            clearResults();
+        }
+
+        function showError(message) {
+            const errorDiv = document.getElementById('errorMessage');
+            errorDiv.textContent = message;
+            errorDiv.classList.add('active');
+        }
+
+        function hideError() {
+            document.getElementById('errorMessage').classList.remove('active');
+        }
+
+        function showLoading() {
+            document.getElementById('loading').classList.add('active');
+            document.getElementById('results').classList.remove('active');
+        }
+
+        function hideLoading() {
+            document.getElementById('loading').classList.remove('active');
+        }
+
+        function clearResults() {
+            currentResults = null;
+            document.getElementById('results').classList.remove('active');
+            document.getElementById('resultsContent').innerHTML = '';
+        }
+
+        async function handleModeA(event) {
+            event.preventDefault();
+            hideError();
+            showLoading();
+
+            const fileInput = document.getElementById('resumeFileA');
+            const file = fileInput.files[0];
+
+            if (!file) {
+                showError('กรุณาเลือกไฟล์ Resume');
+                hideLoading();
+                return;
+            }
+
+            try {
+                // Step 1: Upload resume
+                const formData = new FormData();
+                formData.append('file', file);
+
+                const uploadResponse = await fetch(`${API_BASE_URL}/resumes/upload`, {
+                    method: 'POST',
+                    body: formData
+                });
+
+                if (!uploadResponse.ok) {
+                    const error = await uploadResponse.json();
+                    throw new Error(error.detail || 'Upload failed');
+                }
+
+                const uploadResult = await uploadResponse.json();
+                const resumeId = uploadResult.resume_id;
+
+                // Step 2: Search jobs
+                const searchResponse = await fetch(`${API_BASE_URL}/jobs/search_by_resume`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ resume_id: resumeId })
+                });
+
+                if (!searchResponse.ok) {
+                    const error = await searchResponse.json();
+                    throw new Error(error.detail || 'Search failed');
+                }
+
+                const searchResult = await searchResponse.json();
+                displayResultsModeA(searchResult);
+                currentResults = searchResult;
+
+            } catch (error) {
+                showError(`เกิดข้อผิดพลาด: ${error.message}`);
+            } finally {
+                hideLoading();
+            }
+        }
+
+        async function handleModeB(event) {
+            event.preventDefault();
+            hideError();
+            showLoading();
+
+            const jobDescription = document.getElementById('jobDescription').value;
+            const fileInput = document.getElementById('resumeFilesB');
+            const files = fileInput.files;
+
+            if (!jobDescription.trim()) {
+                showError('กรุณากรอก Job Description');
+                hideLoading();
+                return;
+            }
+
+            if (files.length === 0) {
+                showError('กรุณาเลือกไฟล์ Resume อย่างน้อย 1 ไฟล์');
+                hideLoading();
+                return;
+            }
+
+            try {
+                // Step 1: Bulk upload resumes
+                const formData = new FormData();
+                for (let i = 0; i < files.length; i++) {
+                    formData.append('files', files[i]);
+                }
+
+                const uploadResponse = await fetch(`${API_BASE_URL}/resumes/bulk_upload`, {
+                    method: 'POST',
+                    body: formData
+                });
+
+                if (!uploadResponse.ok) {
+                    const error = await uploadResponse.json();
+                    throw new Error(error.detail || 'Upload failed');
+                }
+
+                const uploadResult = await uploadResponse.json();
+
+                // Step 2: Search resumes by job
+                const searchResponse = await fetch(`${API_BASE_URL}/resumes/search_by_job?job_description=${encodeURIComponent(jobDescription)}`, {
+                    method: 'POST'
+                });
+
+                if (!searchResponse.ok) {
+                    const error = await searchResponse.json();
+                    throw new Error(error.detail || 'Search failed');
+                }
+
+                const searchResult = await searchResponse.json();
+                displayResultsModeB(searchResult);
+                currentResults = searchResult;
+
+            } catch (error) {
+                showError(`เกิดข้อผิดพลาด: ${error.message}`);
+            } finally {
+                hideLoading();
+            }
+        }
+
+        function displayResultsModeA(data) {
+            const resultsDiv = document.getElementById('resultsContent');
+            const results = data.results || [];
+
+            if (results.length === 0) {
+                resultsDiv.innerHTML = '<p>ไม่พบตำแหน่งงานที่เหมาะสม</p>';
+                document.getElementById('results').classList.add('active');
+                return;
+            }
+
+            let html = `
+                <table class="results-table">
+                    <thead>
+                        <tr>
+                            <th>Rank</th>
+                            <th>Job Title</th>
+                            <th>Match Score</th>
+                            <th>Rerank Score</th>
+                            <th>Details</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+            `;
+
+            results.forEach(item => {
+                html += `
+                    <tr>
+                        <td><strong>#${item.rank}</strong></td>
+                        <td>${item.job_title}</td>
+                        <td><span class="score">${(item.match_score * 100).toFixed(1)}%</span></td>
+                        <td><span class="score">${(item.rerank_score * 100).toFixed(1)}%</span></td>
+                        <td>
+                            <div class="info-section">
+                                <strong>เหตุผล:</strong> ${item.reasons || 'N/A'}<br>
+                                ${item.highlighted_skills && item.highlighted_skills.length > 0 ? 
+                                    `<strong>จุดเด่น:</strong> ${item.highlighted_skills.map(s => `<span class="badge">${s}</span>`).join('')}<br>` : ''}
+                                ${item.gaps && item.gaps.length > 0 ? 
+                                    `<strong>จุดที่ขาด:</strong> ${item.gaps.map(g => `<span class="badge" style="background:#ffebee;color:#c62828">${g}</span>`).join('')}<br>` : ''}
+                                ${item.recommended_questions_for_interview && item.recommended_questions_for_interview.length > 0 ? 
+                                    `<strong>คำถามแนะนำ:</strong><ul>${item.recommended_questions_for_interview.map(q => `<li>${q}</li>`).join('')}</ul>` : ''}
+                            </div>
+                        </td>
+                    </tr>
+                `;
+            });
+
+            html += `
+                    </tbody>
+                </table>
+            `;
+
+            resultsDiv.innerHTML = html;
+            document.getElementById('results').classList.add('active');
+        }
+
+        function displayResultsModeB(data) {
+            const resultsDiv = document.getElementById('resultsContent');
+            const results = data.results || [];
+
+            if (results.length === 0) {
+                resultsDiv.innerHTML = '<p>ไม่พบ Resume ที่เหมาะสม</p>';
+                document.getElementById('results').classList.add('active');
+                return;
+            }
+
+            let html = `
+                <table class="results-table">
+                    <thead>
+                        <tr>
+                            <th>Rank</th>
+                            <th>Resume Name</th>
+                            <th>Match Score</th>
+                            <th>Rerank Score</th>
+                            <th>Details</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+            `;
+
+            results.forEach(item => {
+                html += `
+                    <tr>
+                        <td><strong>#${item.rank}</strong></td>
+                        <td>${item.resume_name}</td>
+                        <td><span class="score">${(item.match_score * 100).toFixed(1)}%</span></td>
+                        <td><span class="score">${(item.rerank_score * 100).toFixed(1)}%</span></td>
+                        <td>
+                            <div class="info-section">
+                                <strong>สรุปประสบการณ์:</strong> ${item.experience_summary || 'N/A'}<br>
+                                <strong>เหตุผลที่เหมาะ:</strong> ${item.fit_reasons || 'N/A'}<br>
+                                ${item.highlighted_skills && item.highlighted_skills.length > 0 ? 
+                                    `<strong>จุดเด่น:</strong> ${item.highlighted_skills.map(s => `<span class="badge">${s}</span>`).join('')}<br>` : ''}
+                                ${item.risks && item.risks.length > 0 ? 
+                                    `<strong>ความเสี่ยง:</strong> ${item.risks.map(r => `<span class="badge" style="background:#ffebee;color:#c62828">${r}</span>`).join('')}<br>` : ''}
+                                <strong>ขั้นตอนถัดไป:</strong> ${item.suggested_next_step || 'N/A'}
+                            </div>
+                        </td>
+                    </tr>
+                `;
+            });
+
+            html += `
+                    </tbody>
+                </table>
+            `;
+
+            resultsDiv.innerHTML = html;
+            document.getElementById('results').classList.add('active');
+        }
+
+        function exportResults() {
+            if (!currentResults) {
+                showError('ไม่มีผลลัพธ์ให้ Export');
+                return;
+            }
+
+            const dataStr = JSON.stringify(currentResults, null, 2);
+            const dataBlob = new Blob([dataStr], { type: 'application/json' });
+            const url = URL.createObjectURL(dataBlob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = `results_${Date.now()}.json`;
+            link.click();
+            URL.revokeObjectURL(url);
+        }
+    </script>
+</body>
+</html>
+
