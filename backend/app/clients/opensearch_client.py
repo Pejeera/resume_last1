@@ -16,13 +16,15 @@ logger = get_logger(__name__)
 class OpenSearchClient:
     """OpenSearch client for vector search operations"""
     
+    # Class-level mock data storage to persist across instances
+    _mock_data_storage = {
+        "jobs_index": [],
+        "resumes_index": []
+    }
+    
     def __init__(self):
         if settings.USE_MOCK:
             self.client = None
-            self._mock_data = {
-                "jobs_index": [],
-                "resumes_index": []
-            }
             logger.info("OpenSearchClient initialized in MOCK mode")
         else:
             self.client = OpenSearch(
@@ -37,8 +39,8 @@ class OpenSearchClient:
     def create_index_if_not_exists(self, index_name: str, mapping: Dict[str, Any]) -> bool:
         """Create index if it doesn't exist"""
         if settings.USE_MOCK:
-            if index_name not in self._mock_data:
-                self._mock_data[index_name] = []
+            if index_name not in self._mock_data_storage:
+                self._mock_data_storage[index_name] = []
             logger.info(f"MOCK: Created/verified index {index_name}")
             return True
         
@@ -56,9 +58,13 @@ class OpenSearchClient:
     def index_document(self, index_name: str, doc_id: str, document: Dict[str, Any]) -> bool:
         """Index a document"""
         if settings.USE_MOCK:
-            document['_id'] = doc_id
-            self._mock_data[index_name].append(document)
-            logger.info(f"MOCK: Indexed document {doc_id} in {index_name}")
+            # Make a copy to avoid modifying the original
+            doc_copy = document.copy()
+            doc_copy['_id'] = doc_id
+            if index_name not in self._mock_data_storage:
+                self._mock_data_storage[index_name] = []
+            self._mock_data_storage[index_name].append(doc_copy)
+            logger.info(f"MOCK: Indexed document {doc_id} in {index_name} (total: {len(self._mock_data_storage[index_name])})")
             return True
         
         try:
@@ -90,12 +96,16 @@ class OpenSearchClient:
         """
         if settings.USE_MOCK:
             # Mock vector search - return mock results
-            logger.info(f"MOCK: Vector search in {index_name} (top_k={top_k})")
-            results = self._mock_data.get(index_name, [])[:top_k]
-            # Add mock scores
+            logger.info(f"MOCK: Vector search in {index_name} (top_k={top_k}, available: {len(self._mock_data_storage.get(index_name, []))})")
+            results = self._mock_data_storage.get(index_name, [])[:top_k]
+            # Make copies to avoid modifying original
+            results_copy = []
             for i, result in enumerate(results):
-                result['_score'] = 0.95 - (i * 0.05)
-            return results
+                result_copy = result.copy()
+                result_copy['_score'] = 0.95 - (i * 0.05)
+                results_copy.append(result_copy)
+            logger.info(f"MOCK: Returning {len(results_copy)} results")
+            return results_copy
         
         try:
             query = {
@@ -143,9 +153,9 @@ class OpenSearchClient:
     def get_document(self, index_name: str, doc_id: str) -> Optional[Dict[str, Any]]:
         """Get a document by ID"""
         if settings.USE_MOCK:
-            for doc in self._mock_data.get(index_name, []):
+            for doc in self._mock_data_storage.get(index_name, []):
                 if doc.get('_id') == doc_id:
-                    return doc
+                    return doc.copy()
             return None
         
         try:
