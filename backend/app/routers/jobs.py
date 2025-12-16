@@ -31,6 +31,47 @@ class SearchByResumeRequest(BaseModel):
     resume_id: str
 
 
+@router.get("/list")
+async def list_jobs():
+    """
+    List all available jobs
+    
+    Returns list of jobs for selection in frontend
+    """
+    try:
+        from app.clients.opensearch_client import opensearch_client
+        from app.core.config import settings
+        
+        if settings.USE_MOCK:
+            # Get from mock storage
+            jobs = opensearch_client._mock_data_storage.get("jobs_index", [])
+            result = [
+                {
+                    "job_id": job.get("_id", ""),
+                    "title": job.get("title", "N/A"),
+                    "description": job.get("description", job.get("text_excerpt", ""))[:200],
+                    "created_at": job.get("created_at", "")
+                }
+                for job in jobs
+            ]
+        else:
+            # Get from OpenSearch (would need to implement search all)
+            result = []
+        
+        logger.info(f"Listed {len(result)} jobs")
+        return {
+            "jobs": result,
+            "total": len(result)
+        }
+        
+    except Exception as e:
+        logger.error(f"List jobs error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to list jobs: {str(e)}"
+        )
+
+
 @router.post("/create", response_model=JobCreateResponse)
 async def create_job(request: JobCreateRequest):
     """

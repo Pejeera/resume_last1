@@ -6,6 +6,7 @@ from typing import List, Dict, Any, Optional
 from app.clients.bedrock_client import bedrock_client
 from app.clients.opensearch_client import opensearch_client
 from app.core.logging import get_logger
+from app.core.config import settings
 from app.core.exceptions import EmbeddingError, RerankError, OpenSearchError
 
 logger = get_logger(__name__)
@@ -47,6 +48,18 @@ class MatchingService:
             
             # 2. Vector search in jobs index
             logger.info(f"Searching jobs index (top_k={top_k_initial})")
+            
+            # Log available jobs count
+            available_jobs_count = None
+            if settings.USE_MOCK:
+                from app.clients.opensearch_client import opensearch_client
+                available_jobs = opensearch_client._mock_data_storage.get(self.JOBS_INDEX, [])
+                available_jobs_count = len(available_jobs)
+                logger.info(f"Available jobs in index: {available_jobs_count}")
+                if available_jobs:
+                    job_titles = [job.get("title", "N/A") for job in available_jobs[:10]]
+                    logger.info(f"Sample job titles: {job_titles}")
+            
             candidates = self.opensearch.vector_search(
                 index_name=self.JOBS_INDEX,
                 query_vector=resume_embedding,
@@ -54,8 +67,10 @@ class MatchingService:
             )
             
             if not candidates:
-                logger.warning("No jobs found in vector search")
+                logger.warning(f"No jobs found in vector search. Available jobs in index: {available_jobs_count if available_jobs_count is not None else 'N/A'}")
                 return []
+            
+            logger.info(f"Found {len(candidates)} candidates from vector search")
             
             # 3. Prepare candidates for reranking
             candidates_for_rerank = []
@@ -127,6 +142,15 @@ class MatchingService:
             
             # 2. Vector search in resumes index
             logger.info(f"Searching resumes index (top_k={top_k_initial})")
+            
+            # Log available resumes count
+            available_resumes_count = None
+            if settings.USE_MOCK:
+                from app.clients.opensearch_client import opensearch_client
+                available_resumes = opensearch_client._mock_data_storage.get(self.RESUMES_INDEX, [])
+                available_resumes_count = len(available_resumes)
+                logger.info(f"Available resumes in index: {available_resumes_count}")
+            
             candidates = self.opensearch.vector_search(
                 index_name=self.RESUMES_INDEX,
                 query_vector=job_embedding,
@@ -134,8 +158,10 @@ class MatchingService:
             )
             
             if not candidates:
-                logger.warning("No resumes found in vector search")
+                logger.warning(f"No resumes found in vector search. Available resumes in index: {available_resumes_count if available_resumes_count is not None else 'N/A'}")
                 return []
+            
+            logger.info(f"Found {len(candidates)} candidates from vector search")
             
             # 3. Prepare candidates for reranking
             candidates_for_rerank = []

@@ -316,8 +316,10 @@
                 <h2>ค้นหา Resume ที่เหมาะกับตำแหน่งงาน</h2>
                 <form id="formModeB" onsubmit="handleModeB(event)">
                     <div class="form-group">
-                        <label for="jobDescription">Job Description</label>
-                        <textarea id="jobDescription" placeholder="กรอกคำอธิบายตำแหน่งงาน หรือ Job ID (ถ้ามี)"></textarea>
+                        <label for="jobSelect">เลือกตำแหน่งงาน</label>
+                        <select id="jobSelect" required>
+                            <option value="">กำลังโหลด...</option>
+                        </select>
                     </div>
                     <div class="form-group">
                         <label for="resumeFilesB">อัปโหลด Resumes หลายไฟล์ (PDF/DOCX/TXT)</label>
@@ -348,6 +350,45 @@
         const API_BASE_URL = 'http://localhost:8000/api';
         let currentResults = null;
         let currentMode = 'modeA';
+        let availableJobs = [];
+
+        // Load jobs list on page load
+        window.addEventListener('DOMContentLoaded', async () => {
+            await loadJobsList();
+        });
+
+        async function loadJobsList() {
+            try {
+                const response = await fetch(`${API_BASE_URL}/jobs/list`);
+                if (response.ok) {
+                    const data = await response.json();
+                    availableJobs = data.jobs || [];
+                    updateJobSelect();
+                } else {
+                    console.error('Failed to load jobs list');
+                }
+            } catch (error) {
+                console.error('Error loading jobs list:', error);
+            }
+        }
+
+        function updateJobSelect() {
+            const select = document.getElementById('jobSelect');
+            select.innerHTML = '<option value="">-- เลือกตำแหน่งงาน --</option>';
+            
+            if (availableJobs.length === 0) {
+                select.innerHTML = '<option value="">ไม่มีตำแหน่งงาน (กรุณา seed jobs ก่อน)</option>';
+                return;
+            }
+
+            availableJobs.forEach(job => {
+                const option = document.createElement('option');
+                option.value = job.job_id;
+                option.textContent = `${job.title} (${job.job_id.substring(0, 8)}...)`;
+                option.title = job.description;
+                select.appendChild(option);
+            });
+        }
 
         function switchMode(mode) {
             currentMode = mode;
@@ -450,12 +491,13 @@
             hideError();
             showLoading();
 
-            const jobDescription = document.getElementById('jobDescription').value;
+            const jobSelect = document.getElementById('jobSelect');
+            const selectedJobId = jobSelect.value;
             const fileInput = document.getElementById('resumeFilesB');
             const files = fileInput.files;
 
-            if (!jobDescription.trim()) {
-                showError('กรุณากรอก Job Description');
+            if (!selectedJobId) {
+                showError('กรุณาเลือกตำแหน่งงาน');
                 hideLoading();
                 return;
             }
@@ -486,9 +528,7 @@
                 const uploadResult = await uploadResponse.json();
 
                 // Step 2: Search resumes by job
-                const params = new URLSearchParams();
-                if (jobDescription) params.append('job_description', jobDescription);
-                const searchResponse = await fetch(`${API_BASE_URL}/resumes/search_by_job?${params.toString()}`, {
+                const searchResponse = await fetch(`${API_BASE_URL}/resumes/search_by_job?job_id=${encodeURIComponent(selectedJobId)}`, {
                     method: 'POST'
                 });
 
