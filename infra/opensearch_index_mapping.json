@@ -1,0 +1,111 @@
+{
+  "jobs_index": {
+    "mappings": {
+      "properties": {
+        "id": {
+          "type": "keyword"
+        },
+        "title": {
+          "type": "text",
+          "fields": {
+            "keyword": {
+              "type": "keyword"
+            }
+          }
+        },
+        "description": {
+          "type": "text"
+        },
+        "text_excerpt": {
+          "type": "text"
+        },
+        "embeddings": {
+          "type": "knn_vector",
+          "dimension": 1024,
+          "method": {
+            "name": "hnsw",
+            "space_type": "cosinesimil",
+            "engine": "nmslib",
+            "parameters": {
+              "ef_construction": 128,
+              "m": 24
+            }
+          }
+        },
+        "metadata": {
+          "type": "object",
+          "enabled": true
+        },
+        "created_at": {
+          "type": "date"
+        }
+      }
+    },
+    "settings": {
+      "index": {
+        "knn": true,
+        "knn.algo_param.ef_search": 100,
+        "number_of_shards": 1,
+        "number_of_replicas": 1
+      }
+    }
+  },
+  "resumes_index": {
+    "mappings": {
+      "properties": {
+        "id": {
+          "type": "keyword"
+        },
+        "name": {
+          "type": "text",
+          "fields": {
+            "keyword": {
+              "type": "keyword"
+            }
+          }
+        },
+        "full_text": {
+          "type": "text"
+        },
+        "text_excerpt": {
+          "type": "text"
+        },
+        "embeddings": {
+          "type": "knn_vector",
+          "dimension": 1024,
+          "method": {
+            "name": "hnsw",
+            "space_type": "cosinesimil",
+            "engine": "nmslib",
+            "parameters": {
+              "ef_construction": 128,
+              "m": 24
+            }
+          }
+        },
+        "metadata": {
+          "type": "object",
+          "enabled": true
+        },
+        "s3_url": {
+          "type": "keyword"
+        },
+        "s3_key": {
+          "type": "keyword"
+        },
+        "created_at": {
+          "type": "date"
+        }
+      }
+    },
+    "settings": {
+      "index": {
+        "knn": true,
+        "knn.algo_param.ef_search": 100,
+        "number_of_shards": 1,
+        "number_of_replicas": 1
+      }
+    }
+  }
+}
+

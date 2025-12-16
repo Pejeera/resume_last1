@@ -486,7 +486,9 @@
                 const uploadResult = await uploadResponse.json();
 
                 // Step 2: Search resumes by job
-                const searchResponse = await fetch(`${API_BASE_URL}/resumes/search_by_job?job_description=${encodeURIComponent(jobDescription)}`, {
+                const params = new URLSearchParams();
+                if (jobDescription) params.append('job_description', jobDescription);
+                const searchResponse = await fetch(`${API_BASE_URL}/resumes/search_by_job?${params.toString()}`, {
                     method: 'POST'
                 });
 

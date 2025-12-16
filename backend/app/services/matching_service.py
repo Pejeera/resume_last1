@@ -2,7 +2,7 @@
 Matching Service
 Core business logic for resume-job matching
 """
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from app.clients.bedrock_client import bedrock_client
 from app.clients.opensearch_client import opensearch_client
 from app.core.logging import get_logger
