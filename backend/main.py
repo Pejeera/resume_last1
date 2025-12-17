@@ -6,6 +6,13 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from mangum import Mangum
 from contextlib import asynccontextmanager
+from pathlib import Path
+from dotenv import load_dotenv
+
+# Load .env from infra directory (if exists)
+env_path = Path(__file__).parent.parent / 'infra' / '.env'
+if env_path.exists():
+    load_dotenv(env_path)
 
 from app.routers import resumes, jobs, health
 from app.core.config import settings

@@ -7,14 +7,21 @@ from typing import List
 import os
 import json
 import boto3
+from pathlib import Path
+from dotenv import load_dotenv
 from botocore.exceptions import ClientError
+
+# Load .env from infra directory (if exists)
+env_path = Path(__file__).parent.parent.parent / 'infra' / '.env'
+if env_path.exists():
+    load_dotenv(env_path)
 
 
 class Settings(BaseSettings):
     # Application
     APP_NAME: str = "Resume Matching API"
     DEBUG: bool = False
-    USE_MOCK: bool = os.getenv("USE_MOCK", "true").lower() == "true"
+    USE_MOCK: bool = os.getenv("USE_MOCK", "false").lower() == "true"
     
     # CORS
     CORS_ORIGINS: List[str] = ["*"]

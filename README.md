@@ -80,7 +80,6 @@ resume_last1/
 │   └── index.html                 # Single Page Application
 ├── infra/
 │   ├── opensearch_index_mapping.json  # OpenSearch Index Schema
-│   ├── env.example                # Environment Variables Template
 │   └── rerank_prompt_template.md  # Rerank Prompt Documentation
 └── README.md                      # This File
 ```
@@ -96,35 +95,40 @@ pip install -r requirements.txt
 
 ### 2. ตั้งค่า Environment Variables
 
-สร้างไฟล์ `.env` ในโฟลเดอร์ `backend/` จาก `infra/env.example`:
+สร้างไฟล์ `.env` ในโฟลเดอร์ `backend/`:
 
 ```bash
-# สำหรับ Local Development (Mock Mode)
-USE_MOCK=true
-DEBUG=true
+# Production Mode (default: false = ใช้ AWS services จริง)
+USE_MOCK=false
 
-# CORS
-CORS_ORIGINS=["*"]
-
-# AWS Configuration (ถ้าไม่ใช้ Mock)
+# AWS Configuration (จำเป็น)
 AWS_REGION=ap-southeast-1
-AWS_ACCESS_KEY_ID=your_key
-AWS_SECRET_ACCESS_KEY=your_secret
+AWS_ACCESS_KEY_ID=your_aws_access_key_id
+AWS_SECRET_ACCESS_KEY=your_aws_secret_access_key
 
-# S3
+# S3 Configuration
 S3_BUCKET_NAME=resume-matching-bucket
 S3_PREFIX=resumes/
 
-# OpenSearch
+# OpenSearch Configuration
 OPENSEARCH_ENDPOINT=https://your-opensearch-endpoint.es.amazonaws.com
 OPENSEARCH_USERNAME=admin
-OPENSEARCH_PASSWORD=your_password
+OPENSEARCH_PASSWORD=your_opensearch_password
+OPENSEARCH_USE_SSL=true
+OPENSEARCH_VERIFY_CERTS=false
 
-# Bedrock
+# Bedrock Configuration
 BEDROCK_REGION=ap-southeast-1
 BEDROCK_EMBEDDING_MODEL=cohere.embed-multilingual-v3
 BEDROCK_RERANK_MODEL=us.amazon.nova-lite-v1:0
+
+# Optional: Rate Limiting
+RATE_LIMIT_PER_MINUTE=60
 ```
+
+**หมายเหตุ:** 
+- Default mode คือ **Production Mode** (`USE_MOCK=false`) ซึ่งจะใช้ AWS services จริง
+- ถ้าต้องการใช้ Mock Mode สำหรับ development ให้ตั้ง `USE_MOCK=true` (ไม่ต้องมี AWS credentials)
 
 ### 3. รัน Backend Server
 
@@ -294,11 +298,16 @@ zip -r lambda_function.zip . -x "*.pyc" "__pycache__/*"
 ### 3. ตั้งค่า Environment Variables
 
 ตั้งค่าใน Lambda Console หรือใช้ Secrets Manager:
-- `USE_MOCK=false`
+- `USE_MOCK=false` (default)
 - `AWS_REGION=ap-southeast-1`
+- `AWS_ACCESS_KEY_ID=your_key` (หรือใช้ IAM Role)
+- `AWS_SECRET_ACCESS_KEY=your_secret` (หรือใช้ IAM Role)
 - `S3_BUCKET_NAME=your-bucket`
 - `OPENSEARCH_ENDPOINT=your-endpoint`
-- และอื่นๆ ตาม `infra/env.example`
+- `OPENSEARCH_USERNAME=admin`
+- `OPENSEARCH_PASSWORD=your_password`
+- `BEDROCK_REGION=ap-southeast-1`
+- และอื่นๆ ตามที่ต้องการ
 
 ### 4. สร้าง API Gateway
 
@@ -424,9 +433,10 @@ curl -X POST "http://localhost:8000/api/jobs/search_by_resume" \
 
 ## 🐛 Troubleshooting
 
-### ปัญหา: Mock mode ไม่ทำงาน
-- ตรวจสอบว่า `USE_MOCK=true` ใน `.env`
-- ตรวจสอบ logs ใน console
+### ปัญหา: Production mode ไม่ทำงาน
+- ตรวจสอบว่า `USE_MOCK=false` ใน `.env` (หรือไม่ต้องตั้งค่าเลย เพราะเป็น default)
+- ตรวจสอบ AWS credentials และ permissions
+- ตรวจสอบ logs ใน console หรือ CloudWatch
 
 ### ปัญหา: OpenSearch connection error
 - ตรวจสอบ endpoint และ credentials
