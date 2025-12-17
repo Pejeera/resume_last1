@@ -91,6 +91,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Root endpoint for testing
+@app.get("/")
+async def root():
+    """Root endpoint"""
+    return {"message": "Resume Matching API is running", "version": "1.0.0"}
+
 # Include routers
 app.include_router(health.router, prefix="/api", tags=["Health"])
 app.include_router(resumes.router, prefix="/api/resumes", tags=["Resumes"])

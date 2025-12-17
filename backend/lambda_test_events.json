@@ -1,0 +1,245 @@
+{
+  "rest_api_v1_health_get": {
+    "resource": "/{proxy+}",
+    "path": "/api/health",
+    "httpMethod": "GET",
+    "headers": {
+      "Accept": "application/json",
+      "Content-Type": "application/json"
+    },
+    "multiValueHeaders": {},
+    "queryStringParameters": null,
+    "multiValueQueryStringParameters": null,
+    "pathParameters": {
+      "proxy": "api/health"
+    },
+    "stageVariables": null,
+    "requestContext": {
+      "resourceId": "abc123",
+      "resourcePath": "/{proxy+}",
+      "httpMethod": "GET",
+      "extendedRequestId": "test-request-id-1",
+      "requestId": "test-request-id-1",
+      "path": "/prod/api/health",
+      "accountId": "123456789012",
+      "protocol": "HTTP/1.1",
+      "stage": "prod",
+      "domainPrefix": "api",
+      "requestTime": "01/Jan/2024:00:00:00 +0000",
+      "requestTimeEpoch": 1704067200,
+      "identity": {
+        "sourceIp": "127.0.0.1",
+        "userAgent": "Mozilla/5.0"
+      },
+      "apiId": "test-api-id"
+    },
+    "body": null,
+    "isBase64Encoded": false
+  },
+  "rest_api_v1_jobs_list_get": {
+    "resource": "/{proxy+}",
+    "path": "/api/jobs/list",
+    "httpMethod": "GET",
+    "headers": {
+      "Accept": "application/json",
+      "Content-Type": "application/json"
+    },
+    "multiValueHeaders": {},
+    "queryStringParameters": null,
+    "multiValueQueryStringParameters": null,
+    "pathParameters": {
+      "proxy": "api/jobs/list"
+    },
+    "stageVariables": null,
+    "requestContext": {
+      "resourceId": "abc123",
+      "resourcePath": "/{proxy+}",
+      "httpMethod": "GET",
+      "extendedRequestId": "test-request-id-2",
+      "requestId": "test-request-id-2",
+      "path": "/prod/api/jobs/list",
+      "accountId": "123456789012",
+      "protocol": "HTTP/1.1",
+      "stage": "prod",
+      "domainPrefix": "api",
+      "requestTime": "01/Jan/2024:00:00:00 +0000",
+      "requestTimeEpoch": 1704067200,
+      "identity": {
+        "sourceIp": "127.0.0.1",
+        "userAgent": "Mozilla/5.0"
+      },
+      "apiId": "test-api-id"
+    },
+    "body": null,
+    "isBase64Encoded": false
+  },
+  "rest_api_v1_jobs_create_post": {
+    "resource": "/{proxy+}",
+    "path": "/api/jobs/create",
+    "httpMethod": "POST",
+    "headers": {
+      "Accept": "application/json",
+      "Content-Type": "application/json"
+    },
+    "multiValueHeaders": {},
+    "queryStringParameters": null,
+    "multiValueQueryStringParameters": null,
+    "pathParameters": {
+      "proxy": "api/jobs/create"
+    },
+    "stageVariables": null,
+    "requestContext": {
+      "resourceId": "abc123",
+      "resourcePath": "/{proxy+}",
+      "httpMethod": "POST",
+      "extendedRequestId": "test-request-id-3",
+      "requestId": "test-request-id-3",
+      "path": "/prod/api/jobs/create",
+      "accountId": "123456789012",
+      "protocol": "HTTP/1.1",
+      "stage": "prod",
+      "domainPrefix": "api",
+      "requestTime": "01/Jan/2024:00:00:00 +0000",
+      "requestTimeEpoch": 1704067200,
+      "identity": {
+        "sourceIp": "127.0.0.1",
+        "userAgent": "Mozilla/5.0"
+      },
+      "apiId": "test-api-id"
+    },
+    "body": "{\"title\": \"Test Job\", \"description\": \"Test Description\", \"metadata\": {}}",
+    "isBase64Encoded": false
+  },
+  "http_api_v2_health_get": {
+    "version": "2.0",
+    "routeKey": "GET /api/health",
+    "rawPath": "/api/health",
+    "rawQueryString": "",
+    "headers": {
+      "accept": "application/json",
+      "content-type": "application/json",
+      "host": "api.example.com"
+    },
+    "requestContext": {
+      "accountId": "123456789012",
+      "apiId": "test-api-id",
+      "domainName": "api.example.com",
+      "domainPrefix": "api",
+      "http": {
+        "method": "GET",
+        "path": "/api/health",
+        "protocol": "HTTP/1.1",
+        "sourceIp": "127.0.0.1",
+        "userAgent": "Mozilla/5.0"
+      },
+      "requestId": "test-request-id-1",
+      "routeKey": "GET /api/health",
+      "stage": "$default",
+      "time": "01/Jan/2024:00:00:00 +0000",
+      "timeEpoch": 1704067200
+    },
+    "body": null,
+    "isBase64Encoded": false
+  },
+  "http_api_v2_jobs_list_get": {
+    "version": "2.0",
+    "routeKey": "GET /api/jobs/list",
+    "rawPath": "/api/jobs/list",
+    "rawQueryString": "",
+    "headers": {
+      "accept": "application/json",
+      "content-type": "application/json",
+      "host": "api.example.com"
+    },
+    "requestContext": {
+      "accountId": "123456789012",
+      "apiId": "test-api-id",
+      "domainName": "api.example.com",
+      "domainPrefix": "api",
+      "http": {
+        "method": "GET",
+        "path": "/api/jobs/list",
+        "protocol": "HTTP/1.1",
+        "sourceIp": "127.0.0.1",
+        "userAgent": "Mozilla/5.0"
+      },
+      "requestId": "test-request-id-2",
+      "routeKey": "GET /api/jobs/list",
+      "stage": "$default",
+      "time": "01/Jan/2024:00:00:00 +0000",
+      "timeEpoch": 1704067200
+    },
+    "body": null,
+    "isBase64Encoded": false
+  },
+  "http_api_v2_jobs_create_post": {
+    "version": "2.0",
+    "routeKey": "POST /api/jobs/create",
+    "rawPath": "/api/jobs/create",
+    "rawQueryString": "",
+    "headers": {
+      "accept": "application/json",
+      "content-type": "application/json",
+      "host": "api.example.com"
+    },
+    "requestContext": {
+      "accountId": "123456789012",
+      "apiId": "test-api-id",
+      "domainName": "api.example.com",
+      "domainPrefix": "api",
+      "http": {
+        "method": "POST",
+        "path": "/api/jobs/create",
+        "protocol": "HTTP/1.1",
+        "sourceIp": "127.0.0.1",
+        "userAgent": "Mozilla/5.0"
+      },
+      "requestId": "test-request-id-3",
+      "routeKey": "POST /api/jobs/create",
+      "stage": "$default",
+      "time": "01/Jan/2024:00:00:00 +0000",
+      "timeEpoch": 1704067200
+    },
+    "body": "{\"title\": \"Test Job\", \"description\": \"Test Description\", \"metadata\": {}}",
+    "isBase64Encoded": false
+  },
+  "cors_preflight_options": {
+    "resource": "/{proxy+}",
+    "path": "/api/health",
+    "httpMethod": "OPTIONS",
+    "headers": {
+      "Origin": "https://example.com",
+      "Access-Control-Request-Method": "GET",
+      "Access-Control-Request-Headers": "content-type"
+    },
+    "multiValueHeaders": {},
+    "queryStringParameters": null,
+    "multiValueQueryStringParameters": null,
+    "pathParameters": {
+      "proxy": "api/health"
+    },
+    "stageVariables": null,
+    "requestContext": {
+      "resourceId": "abc123",
+      "resourcePath": "/{proxy+}",
+      "httpMethod": "OPTIONS",
+      "extendedRequestId": "test-request-id-options",
+      "requestId": "test-request-id-options",
+      "path": "/prod/api/health",
+      "accountId": "123456789012",
+      "protocol": "HTTP/1.1",
+      "stage": "prod",
+      "domainPrefix": "api",
+      "requestTime": "01/Jan/2024:00:00:00 +0000",
+      "requestTimeEpoch": 1704067200,
+      "identity": {
+        "sourceIp": "127.0.0.1",
+        "userAgent": "Mozilla/5.0"
+      },
+      "apiId": "test-api-id"
+    },
+    "body": null,
+    "isBase64Encoded": false
+  }
+}
+
