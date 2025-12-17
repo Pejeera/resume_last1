@@ -1,4 +1,4 @@
-#!/var/lang/bin/python3.11
+#!/usr/local/bin/python3.11
 
 import sys
 import json
