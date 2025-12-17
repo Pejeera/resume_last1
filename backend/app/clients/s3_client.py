@@ -3,9 +3,11 @@ S3 Client for file storage
 """
 import boto3
 from botocore.exceptions import ClientError
-from typing import Optional
+from typing import Optional, Dict, Any, List
 import uuid
+import json
 from datetime import datetime
+import os
 
 from app.core.config import settings
 from app.core.logging import get_logger
@@ -110,6 +112,75 @@ class S3Client:
         except ClientError as e:
             logger.error(f"S3 delete error: {e}")
             return False
+    
+    def save_jobs_data(self, jobs_data: List[Dict[str, Any]]) -> bool:
+        """Save jobs data to S3 (for mock mode persistence)"""
+        s3_key = f"{settings.S3_PREFIX}jobs_data.json"
+        
+        if settings.USE_MOCK:
+            # In mock mode, save to local file
+            local_file = "jobs_data.json"
+            try:
+                with open(local_file, 'w', encoding='utf-8') as f:
+                    json.dump(jobs_data, f, ensure_ascii=False, indent=2)
+                logger.info(f"MOCK: Saved {len(jobs_data)} jobs to {local_file}")
+                return True
+            except Exception as e:
+                logger.error(f"MOCK: Failed to save jobs data: {e}")
+                return False
+        
+        try:
+            data_json = json.dumps(jobs_data, ensure_ascii=False, indent=2).encode('utf-8')
+            self.client.put_object(
+                Bucket=settings.S3_BUCKET_NAME,
+                Key=s3_key,
+                Body=data_json,
+                ContentType='application/json',
+                Metadata={
+                    "saved_at": datetime.utcnow().isoformat(),
+                    "total_jobs": str(len(jobs_data))
+                }
+            )
+            logger.info(f"Saved {len(jobs_data)} jobs to S3: {s3_key}")
+            return True
+        except ClientError as e:
+            logger.error(f"S3 save jobs error: {e}")
+            return False
+    
+    def load_jobs_data(self) -> List[Dict[str, Any]]:
+        """Load jobs data from S3 (for mock mode persistence)"""
+        s3_key = f"{settings.S3_PREFIX}jobs_data.json"
+        
+        if settings.USE_MOCK:
+            # In mock mode, load from local file
+            local_file = "jobs_data.json"
+            if os.path.exists(local_file):
+                try:
+                    with open(local_file, 'r', encoding='utf-8') as f:
+                        jobs_data = json.load(f)
+                    logger.info(f"MOCK: Loaded {len(jobs_data)} jobs from {local_file}")
+                    return jobs_data
+                except Exception as e:
+                    logger.error(f"MOCK: Failed to load jobs data: {e}")
+                    return []
+            else:
+                logger.info(f"MOCK: Jobs data file not found: {local_file}")
+                return []
+        
+        try:
+            response = self.client.get_object(
+                Bucket=settings.S3_BUCKET_NAME,
+                Key=s3_key
+            )
+            jobs_data = json.loads(response['Body'].read().decode('utf-8'))
+            logger.info(f"Loaded {len(jobs_data)} jobs from S3: {s3_key}")
+            return jobs_data
+        except ClientError as e:
+            if e.response['Error']['Code'] == 'NoSuchKey':
+                logger.info(f"Jobs data not found in S3: {s3_key}")
+                return []
+            logger.error(f"S3 load jobs error: {e}")
+            return []
 
 
 # Singleton instance

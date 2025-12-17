@@ -25,6 +25,8 @@ class OpenSearchClient:
     def __init__(self):
         if settings.USE_MOCK:
             self.client = None
+            # Load jobs from S3 on initialization
+            self._load_jobs_from_s3()
             logger.info("OpenSearchClient initialized in MOCK mode")
         else:
             self.client = OpenSearch(
@@ -36,12 +38,42 @@ class OpenSearchClient:
             )
             logger.info(f"OpenSearchClient initialized for endpoint: {settings.OPENSEARCH_ENDPOINT}")
     
+    def _load_jobs_from_s3(self):
+        """Load jobs from S3 into mock storage"""
+        if not settings.USE_MOCK:
+            return
+        
+        try:
+            from app.clients.s3_client import s3_client
+            jobs_data = s3_client.load_jobs_data()
+            if jobs_data:
+                OpenSearchClient._mock_data_storage["jobs_index"] = jobs_data
+                logger.info(f"Loaded {len(jobs_data)} jobs from S3 into mock storage")
+        except Exception as e:
+            logger.error(f"Failed to load jobs from S3: {e}")
+    
+    def _save_jobs_to_s3(self):
+        """Save jobs from mock storage to S3"""
+        if not settings.USE_MOCK:
+            return
+        
+        try:
+            from app.clients.s3_client import s3_client
+            jobs_data = OpenSearchClient._mock_data_storage.get("jobs_index", [])
+            if jobs_data:
+                s3_client.save_jobs_data(jobs_data)
+        except Exception as e:
+            logger.error(f"Failed to save jobs to S3: {e}")
+    
     def create_index_if_not_exists(self, index_name: str, mapping: Dict[str, Any]) -> bool:
         """Create index if it doesn't exist"""
         if settings.USE_MOCK:
-            if index_name not in self._mock_data_storage:
-                self._mock_data_storage[index_name] = []
+            if index_name not in OpenSearchClient._mock_data_storage:
+                OpenSearchClient._mock_data_storage[index_name] = []
             logger.info(f"MOCK: Created/verified index {index_name}")
+            # Save to S3 after creating index (for jobs only)
+            if index_name == "jobs_index":
+                self._save_jobs_to_s3()
             return True
         
         try:
@@ -61,10 +93,13 @@ class OpenSearchClient:
             # Make a copy to avoid modifying the original
             doc_copy = document.copy()
             doc_copy['_id'] = doc_id
-            if index_name not in self._mock_data_storage:
-                self._mock_data_storage[index_name] = []
-            self._mock_data_storage[index_name].append(doc_copy)
-            logger.info(f"MOCK: Indexed document {doc_id} in {index_name} (total: {len(self._mock_data_storage[index_name])})")
+            if index_name not in OpenSearchClient._mock_data_storage:
+                OpenSearchClient._mock_data_storage[index_name] = []
+            OpenSearchClient._mock_data_storage[index_name].append(doc_copy)
+            logger.info(f"MOCK: Indexed document {doc_id} in {index_name} (total: {len(OpenSearchClient._mock_data_storage[index_name])})")
+            # Save to S3 after indexing (for jobs only)
+            if index_name == "jobs_index":
+                self._save_jobs_to_s3()
             return True
         
         try:

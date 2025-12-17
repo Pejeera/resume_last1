@@ -25,28 +25,40 @@ async def lifespan(app: FastAPI):
         jobs_count = len(opensearch_client._mock_data_storage.get("jobs_index", []))
         logger.info(f"Startup: Found {jobs_count} jobs in mock storage")
         
-        # If no jobs, auto-seed
+        # If no jobs, try to load from S3 first, then auto-seed if still empty
         if jobs_count == 0:
-            logger.info("No jobs found. Auto-seeding 100 test jobs...")
+            logger.info("No jobs found in memory. Trying to load from S3...")
             try:
-                from seed_jobs import build_job_definitions
-                from app.repositories.job_repository import job_repository
-                
-                jobs_to_create = build_job_definitions()
-                for i, job_data in enumerate(jobs_to_create):
-                    try:
-                        job_repository.create_job(
-                            title=job_data["title"],
-                            description=job_data["description"],
-                            metadata=job_data["metadata"]
-                        )
-                    except Exception as e:
-                        logger.error(f"Failed to create job {job_data['title']}: {e}")
-                
-                final_count = len(opensearch_client._mock_data_storage.get("jobs_index", []))
-                logger.info(f"Auto-seeding completed. Total jobs: {final_count}")
+                from app.clients.s3_client import s3_client
+                jobs_data = s3_client.load_jobs_data()
+                if jobs_data:
+                    opensearch_client._mock_data_storage["jobs_index"] = jobs_data
+                    logger.info(f"Loaded {len(jobs_data)} jobs from S3")
+                else:
+                    logger.info("No jobs in S3. Auto-seeding 100 test jobs...")
+                    from seed_jobs import build_job_definitions
+                    from app.repositories.job_repository import job_repository
+                    
+                    jobs_to_create = build_job_definitions()
+                    for i, job_data in enumerate(jobs_to_create):
+                        try:
+                            job_repository.create_job(
+                                title=job_data["title"],
+                                description=job_data["description"],
+                                metadata=job_data["metadata"]
+                            )
+                        except Exception as e:
+                            logger.error(f"Failed to create job {job_data['title']}: {e}")
+                    
+                    # Save to S3 after seeding
+                    final_jobs = opensearch_client._mock_data_storage.get("jobs_index", [])
+                    if final_jobs:
+                        s3_client.save_jobs_data(final_jobs)
+                    
+                    final_count = len(final_jobs)
+                    logger.info(f"Auto-seeding completed. Total jobs: {final_count}")
             except Exception as e:
-                logger.error(f"Auto-seeding failed: {e}")
+                logger.error(f"Failed to load/seed jobs: {e}")
                 logger.info("You can manually seed jobs by running 'python seed_jobs.py'")
     
     yield

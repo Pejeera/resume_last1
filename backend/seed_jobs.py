@@ -161,6 +161,15 @@ def seed_jobs() -> None:
             logger.error(f"Failed to create job '{job['title']}': {e}")
 
     logger.info(f"Job seeding completed. Total created: {created}")
+    
+    # Save to S3 after seeding
+    if settings.USE_MOCK:
+        from app.clients.opensearch_client import opensearch_client
+        from app.clients.s3_client import s3_client
+        jobs_data = opensearch_client._mock_data_storage.get("jobs_index", [])
+        if jobs_data:
+            s3_client.save_jobs_data(jobs_data)
+            logger.info(f"Saved {len(jobs_data)} jobs to S3")
 
 
 if __name__ == "__main__":
