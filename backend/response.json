@@ -1,1 +1,1 @@
-{"errorType":"Runtime.ExitError","errorMessage":"RequestId: 6cc39585-30f0-41e3-a41e-b6b3342045c1 Error: Runtime exited with error: exit status 1"}
+{"statusCode": 200, "body": "{\"status\":\"healthy\",\"service\":\"Resume Matching API\",\"version\":\"1.0.0\"}", "headers": {"content-length": "70", "content-type": "application/json"}, "isBase64Encoded": false}

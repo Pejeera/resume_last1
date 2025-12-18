@@ -26,14 +26,18 @@ foreach ($dir in $sourceDirs) {
                 $foundIssues = $true
             }
         } else {
-            # โฟลเดอร์
+            # โฟลเดอร์ - ตรวจสอบ recursive
             foreach ($forbidden in $forbiddenFiles) {
                 $found = Get-ChildItem -Path $dir -Recurse -Filter $forbidden -ErrorAction SilentlyContinue | 
-                    Where-Object { $_.FullName -notmatch 'lambda-package|__pycache__' }
+                    Where-Object { 
+                        $_.FullName -notmatch 'lambda-package|__pycache__|\.git|node_modules' -and
+                        $_.FullName -notmatch '\\python\\|\\fastapi\\|\\opensearchpy\\|\\mangum\\|\\websockets\\|\\pydantic\\|\\starlette\\|\\uvicorn\\'
+                    }
                 
                 if ($found) {
                     foreach ($f in $found) {
                         Write-Host "  ❌ FOUND: $($f.FullName)" -ForegroundColor Red
+                        Write-Host "     This file will be copied to /var/task/ and cause stdlib conflicts!" -ForegroundColor Red
                         $foundIssues = $true
                     }
                 }

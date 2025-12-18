@@ -1,0 +1,1 @@
+{"errorMessage": "Unable to import module 'lambda_function': No module named 'mangum'", "errorType": "Runtime.ImportModuleError", "requestId": "", "stackTrace": []}
