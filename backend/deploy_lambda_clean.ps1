@@ -28,14 +28,25 @@ Write-Host "Region  : $Region" -ForegroundColor Yellow
 Write-Host "BuildDir: $BuildDir" -ForegroundColor Yellow
 Write-Host ""
 
-<# Step 0: ตรวจสอบ Docker ว่าใช้งานได้ #>
+<# Step 0: ตรวจสอบ Docker ว่าใช้งานได้จริงๆ #>
 Write-Host "[0/6] Checking Docker..." -ForegroundColor Green
+$dockerAvailable = $false
 try {
     docker --version | Out-Null
-    Write-Host "Docker is available." -ForegroundColor Green
+    # ตรวจสอบว่า Docker daemon พร้อมใช้งานจริงๆ
+    docker ps 2>&1 | Out-Null
+    if ($LASTEXITCODE -eq 0) {
+        $dockerAvailable = $true
+        Write-Host "Docker is available and running." -ForegroundColor Green
+    } else {
+        Write-Host "WARNING: Docker command exists but daemon is not running." -ForegroundColor Yellow
+        Write-Host "Please start Docker Desktop and try again." -ForegroundColor Yellow
+        Write-Host ""
+        Write-Host "Attempting fallback: using existing dependencies in current directory..." -ForegroundColor Yellow
+    }
 } catch {
-    Write-Host "ERROR: Docker is not available. Please install / start Docker Desktop." -ForegroundColor Red
-    exit 1
+    Write-Host "WARNING: Docker is not available." -ForegroundColor Yellow
+    Write-Host "Attempting fallback: using existing dependencies in current directory..." -ForegroundColor Yellow
 }
 
 <# Step 1: ลบโฟลเดอร์ build เดิม และ zip เดิม (ถ้ามี) #>
@@ -51,23 +62,80 @@ if (Test-Path $ZipFile) {
     Remove-Item $ZipFile -Force -ErrorAction SilentlyContinue
 }
 
-<# Step 2: ใช้ Docker ติดตั้ง dependencies ลงในโฟลเดอร์ lambda-package/ #>
-Write-Host "[2/6] Installing dependencies into '$BuildDir/' using Docker (Linux env)..." -ForegroundColor Green
+<# Step 2: ติดตั้ง dependencies ลงในโฟลเดอร์ lambda-package/ #>
+if ($dockerAvailable) {
+    Write-Host "[2/6] Installing dependencies into '$BuildDir/' using Docker (Linux env)..." -ForegroundColor Green
 
-$projectPath = (Get-Location).Path
-# บน Windows ให้ใช้ path แบบเต็มในการ mount
-$dockerWorkDir = "/var/task"
-$volumePath = $projectPath + ":" + $dockerWorkDir
+    $projectPath = (Get-Location).Path
+    # บน Windows ให้ใช้ path แบบเต็มในการ mount
+    $dockerWorkDir = "/var/task"
+    $volumePath = $projectPath + ":" + $dockerWorkDir
 
-docker run --rm `
-    -v "$volumePath" `
-    -w $dockerWorkDir `
-    python:3.11-slim `
-    /bin/bash -c "pip install -r requirements.txt -t $BuildDir/ --quiet"
+    docker run --rm `
+        -v "$volumePath" `
+        -w $dockerWorkDir `
+        python:3.11-slim `
+        /bin/bash -c "pip install -r requirements.txt -t $BuildDir/ --quiet"
 
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "ERROR: Failed to install dependencies via Docker." -ForegroundColor Red
-    exit 1
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "ERROR: Failed to install dependencies via Docker." -ForegroundColor Red
+        exit 1
+    }
+} else {
+    Write-Host "[2/6] Using existing dependencies from current directory..." -ForegroundColor Yellow
+    Write-Host "WARNING: This will copy Windows-compatible dependencies which may not work in Lambda (Linux)." -ForegroundColor Yellow
+    Write-Host "For production, please use Docker to get Linux-compatible dependencies." -ForegroundColor Yellow
+    Write-Host ""
+    
+    # คัดลอก dependencies ที่มีอยู่แล้ว (ถ้ามี)
+    $dependenciesToCopy = @(
+        "fastapi", "mangum", "starlette", "pydantic", "pydantic_core", "pydantic_settings",
+        "opensearchpy", "multipart", "PyPDF2", "docx", "pythonjsonlogger", "watchtower",
+        "h11", "anyio", "sniffio", "idna", "certifi", "charset_normalizer", "urllib3",
+        "requests", "click", "colorama", "dateutil", "jmespath", "six.py", "typing_extensions.py",
+        "yaml", "_yaml", "dotenv", "httptools", "lxml"
+    )
+    
+    $copiedCount = 0
+    foreach ($dep in $dependenciesToCopy) {
+        $depPath = Join-Path "." $dep
+        if (Test-Path $depPath) {
+            $destPath = Join-Path $BuildDir $dep
+            Write-Host "Copying dependency: $dep" -ForegroundColor Gray
+            Copy-Item -Path $depPath -Destination $destPath -Recurse -Force -ErrorAction SilentlyContinue
+            $copiedCount++
+        }
+    }
+    
+    if ($copiedCount -eq 0) {
+        Write-Host "ERROR: No dependencies found in current directory." -ForegroundColor Red
+        Write-Host "Please either:" -ForegroundColor Yellow
+        Write-Host "  1. Start Docker Desktop and run this script again, OR" -ForegroundColor Yellow
+        Write-Host "  2. Install dependencies first: pip install -r requirements.txt" -ForegroundColor Yellow
+        exit 1
+    }
+    
+    Write-Host "Copied $copiedCount dependencies from current directory." -ForegroundColor Green
+    Write-Host "WARNING: These are Windows dependencies. Lambda may fail at runtime." -ForegroundColor Yellow
+    
+    # ลบไฟล์ที่ชนกับ built-in modules ทันทีหลังจาก copy (ก่อน Step 3)
+    Write-Host "[2.1/6] Removing files that conflict with Python built-ins..." -ForegroundColor Green
+    $conflictingItems = @(
+        "http",       # folder http/
+        "http.py",    # file http.py
+        "typing.py",
+        "typing_extensions.py",  # file typing_extensions.py (conflicts with typing_extensions package)
+        "json.py",
+        "six.py"
+    )
+    
+    foreach ($item in $conflictingItems) {
+        $pathDir = Join-Path $BuildDir $item
+        if (Test-Path $pathDir) {
+            Write-Host "Removing conflicting item: $pathDir" -ForegroundColor Yellow
+            Remove-Item $pathDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
 }
 
 <# Step 3: ลบไฟล์/โฟลเดอร์ที่ชนกับ Python built-in modules ใน package #>
