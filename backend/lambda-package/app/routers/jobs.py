@@ -55,8 +55,33 @@ async def list_jobs():
                 for job in jobs
             ]
         else:
-            # Get from OpenSearch (would need to implement search all)
-            result = []
+            # Get from OpenSearch - use scroll API to get all jobs
+            try:
+                from opensearchpy.helpers import scan
+                
+                # Use scan helper to get all documents
+                jobs = []
+                for doc in scan(
+                    opensearch_client.client,
+                    index="jobs_index",
+                    query={"query": {"match_all": {}}},
+                    scroll='2m',
+                    size=100
+                ):
+                    jobs.append(doc['_source'])
+                
+                result = [
+                    {
+                        "job_id": job.get("_id", job.get("job_id", "")),
+                        "title": job.get("title", "N/A"),
+                        "description": job.get("description", job.get("text_excerpt", ""))[:200],
+                        "created_at": job.get("created_at", "")
+                    }
+                    for job in jobs
+                ]
+            except Exception as e:
+                logger.error(f"Error listing jobs from OpenSearch: {e}")
+                result = []
         
         logger.info(f"Listed {len(result)} jobs")
         return {
@@ -94,6 +119,105 @@ async def create_job(request: JobCreateRequest):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to create job: {str(e)}"
+        )
+
+
+@router.post("/sync_from_s3")
+async def sync_jobs_from_s3():
+    """
+    Sync jobs from S3 to OpenSearch
+    
+    Loads jobs data from S3 and indexes them into OpenSearch.
+    This endpoint ensures jobs from S3 are available in OpenSearch for search.
+    """
+    try:
+        from app.clients.s3_client import s3_client
+        from app.clients.opensearch_client import opensearch_client
+        from app.core.config import settings
+        
+        if settings.USE_MOCK:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Sync from S3 is only available in production mode (USE_MOCK=false)"
+            )
+        
+        # Load jobs from S3
+        logger.info("Loading jobs from S3...")
+        jobs_data = s3_client.load_jobs_data()
+        
+        if not jobs_data:
+            return {
+                "message": "No jobs found in S3",
+                "synced": 0,
+                "total": 0
+            }
+        
+        # Ensure index exists
+        index_mapping = {
+            "mappings": {
+                "properties": {
+                    "id": {"type": "keyword"},
+                    "title": {"type": "text"},
+                    "description": {"type": "text"},
+                    "text_excerpt": {"type": "text"},
+                    "embeddings": {
+                        "type": "knn_vector",
+                        "dimension": 1024
+                    },
+                    "metadata": {"type": "object"},
+                    "created_at": {"type": "date"}
+                }
+            }
+        }
+        opensearch_client.create_index_if_not_exists("jobs_index", index_mapping)
+        
+        # Index each job to OpenSearch
+        synced_count = 0
+        skipped_count = 0
+        for job_data in jobs_data:
+            try:
+                # Extract job ID and document
+                job_id = job_data.get("_id") or job_data.get("job_id") or job_data.get("id")
+                
+                if not job_id:
+                    skipped_count += 1
+                    continue
+                
+                # Prepare document for indexing
+                # Remove _id if present (it's used as doc_id parameter)
+                document = {k: v for k, v in job_data.items() if k != "_id"}
+                
+                # Ensure required fields exist
+                if "id" not in document:
+                    document["id"] = job_id
+                
+                # Index to OpenSearch
+                opensearch_client.index_document(
+                    index_name="jobs_index",
+                    doc_id=str(job_id),
+                    document=document
+                )
+                synced_count += 1
+                
+            except Exception as e:
+                logger.error(f"Failed to sync job {job_data.get('_id', job_data.get('job_id', 'unknown'))}: {e}")
+                skipped_count += 1
+        
+        logger.info(f"Synced {synced_count} jobs from S3 to OpenSearch (skipped: {skipped_count})")
+        return {
+            "message": f"Successfully synced {synced_count} jobs from S3 to OpenSearch",
+            "synced": synced_count,
+            "skipped": skipped_count,
+            "total": len(jobs_data)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Sync from S3 error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to sync jobs from S3: {str(e)}"
         )
 
 

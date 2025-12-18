@@ -24,13 +24,23 @@ class S3Client:
             self.client = None
             logger.info("S3Client initialized in MOCK mode")
         else:
-            self.client = boto3.client(
-                's3',
-                region_name=settings.AWS_REGION,
-                aws_access_key_id=settings.AWS_ACCESS_KEY_ID or None,
-                aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY or None
-            )
-            logger.info(f"S3Client initialized for bucket: {settings.S3_BUCKET_NAME}")
+            # Use IAM role credentials if no explicit credentials provided
+            # This allows Lambda to use its IAM role automatically
+            client_kwargs = {
+                'service_name': 's3',
+                'region_name': settings.AWS_REGION
+            }
+            
+            # Only add credentials if explicitly provided (for local dev)
+            if settings.AWS_ACCESS_KEY_ID and settings.AWS_SECRET_ACCESS_KEY:
+                client_kwargs['aws_access_key_id'] = settings.AWS_ACCESS_KEY_ID
+                client_kwargs['aws_secret_access_key'] = settings.AWS_SECRET_ACCESS_KEY
+                logger.info(f"S3Client initialized with explicit credentials for bucket: {settings.S3_BUCKET_NAME}")
+            else:
+                # Use IAM role (default for Lambda)
+                logger.info(f"S3Client initialized using IAM role for bucket: {settings.S3_BUCKET_NAME}")
+            
+            self.client = boto3.client(**client_kwargs)
     
     def upload_file(self, file_content: bytes, file_name: str, content_type: str = "application/octet-stream") -> dict:
         """
