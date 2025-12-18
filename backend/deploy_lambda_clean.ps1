@@ -77,6 +77,7 @@ $conflictingItems = @(
     "http",       # folder http/
     "http.py",    # file http.py
     "typing.py",
+    "typing_extensions.py",  # file typing_extensions.py (conflicts with typing_extensions package)
     "json.py",
     "six.py"
 )
