@@ -214,11 +214,12 @@ foreach ($pkg in $awsSdkPkgs) {
 <# Step 4: copy source code (main.py, lambda_function.py, app/) เข้าไปใน package #>
 Write-Host "[4/6] Copying application source files into build directory..." -ForegroundColor Green
 
-# ตรวจสอบก่อน copy ว่า source code ไม่มีไฟล์ต้องห้ามที่ root level
+# ตรวจสอบก่อน copy ว่า source code ไม่มีไฟล์ต้องห้ามที่ root level และใน app/
 Write-Host "Checking source code for forbidden files..." -ForegroundColor Gray
 $forbiddenInSource = @("http.py", "typing.py")
 $foundInSource = @()
 
+# ตรวจสอบที่ root level
 foreach ($f in $forbiddenInSource) {
     if (Test-Path $f) {
         Write-Host "WARNING: Found forbidden file in source: $f" -ForegroundColor Yellow
@@ -226,13 +227,70 @@ foreach ($f in $forbiddenInSource) {
     }
 }
 
+# ตรวจสอบใน app/ directory (recursive)
+if (Test-Path "app") {
+    foreach ($f in $forbiddenInSource) {
+        $found = Get-ChildItem -Path "app" -Recurse -Filter $f -ErrorAction SilentlyContinue | 
+            Where-Object { $_.FullName -notmatch 'lambda-package|__pycache__' }
+        
+        if ($found) {
+            foreach ($file in $found) {
+                Write-Host "WARNING: Found forbidden file in app/: $($file.FullName)" -ForegroundColor Yellow
+                $foundInSource += $file.FullName
+            }
+        }
+    }
+}
+
 if ($foundInSource.Count -gt 0) {
-    Write-Host "ERROR: Source code contains forbidden files at root level:" -ForegroundColor Red
+    Write-Host "ERROR: Source code contains forbidden files (http.py or typing.py):" -ForegroundColor Red
     foreach ($f in $foundInSource) {
         Write-Host "  - $f" -ForegroundColor Red
     }
-    Write-Host "Please rename or remove these files before deployment." -ForegroundColor Red
+    Write-Host "" -ForegroundColor Red
+    Write-Host "SOLUTION: Rename these files to avoid conflicts with Python stdlib:" -ForegroundColor Yellow
+    Write-Host "  - http.py -> http_utils.py or http_routes.py" -ForegroundColor Yellow
+    Write-Host "  - typing.py -> types.py or typing_utils.py" -ForegroundColor Yellow
+    Write-Host "Then update all imports that reference these files." -ForegroundColor Yellow
     exit 1
+}
+
+# ตรวจสอบ import statements ที่อาจมีปัญหา
+Write-Host "Checking for problematic import statements..." -ForegroundColor Gray
+$problematicImports = @()
+$sourceFiles = @("main.py", "lambda_function.py")
+if (Test-Path "app") {
+    $sourceFiles += Get-ChildItem -Path "app" -Recurse -Filter "*.py" -ErrorAction SilentlyContinue | 
+        Where-Object { $_.FullName -notmatch 'lambda-package|__pycache__' } | 
+        Select-Object -ExpandProperty FullName
+}
+
+foreach ($filePath in $sourceFiles) {
+    if (Test-Path $filePath) {
+        $content = Get-Content $filePath -ErrorAction SilentlyContinue
+        $lineNum = 0
+        foreach ($line in $content) {
+            $lineNum++
+            # ตรวจสอบ import http หรือ import typing (ไม่ใช่ from typing import ...)
+            if ($line -match '^\s*import\s+(http|typing)\s*$') {
+                $problematicImports += "$filePath (line $lineNum): $line"
+            }
+        }
+    }
+}
+
+if ($problematicImports.Count -gt 0) {
+    Write-Host "ERROR: Found problematic import statements:" -ForegroundColor Red
+    foreach ($imp in $problematicImports) {
+        Write-Host "  - $imp" -ForegroundColor Red
+    }
+    Write-Host "" -ForegroundColor Red
+    Write-Host "SOLUTION: Change 'import http' or 'import typing' to:" -ForegroundColor Yellow
+    Write-Host "  - 'from typing import List, Dict, ...' (for typing)" -ForegroundColor Yellow
+    Write-Host "  - 'from http import ...' or use fully qualified imports" -ForegroundColor Yellow
+    exit 1
+} else {
+    Write-Host "OK: No problematic imports found (all use 'from typing import ...')" -ForegroundColor Green
 }
 
 $sources = @("main.py", "lambda_function.py", "app")
