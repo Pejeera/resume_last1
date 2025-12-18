@@ -62,9 +62,13 @@ if (Test-Path $ZipFile) {
     Remove-Item $ZipFile -Force -ErrorAction SilentlyContinue
 }
 
-<# Step 2: ติดตั้ง dependencies ลงในโฟลเดอร์ lambda-package/ #>
+<# Step 2: ติดตั้ง dependencies ลงในโฟลเดอร์ lambda-package/python/ (AWS Best Practice) #>
+# สร้างโฟลเดอร์ python/ สำหรับ dependencies
+$pythonDir = Join-Path $BuildDir "python"
+New-Item -ItemType Directory -Path $pythonDir -Force | Out-Null
+
 if ($dockerAvailable) {
-    Write-Host "[2/6] Installing dependencies into '$BuildDir/' using Docker (Linux env)..." -ForegroundColor Green
+    Write-Host "[2/6] Installing dependencies into '$pythonDir/' using Docker (Linux env)..." -ForegroundColor Green
 
     $projectPath = (Get-Location).Path
     # บน Windows ให้ใช้ path แบบเต็มในการ mount
@@ -75,7 +79,7 @@ if ($dockerAvailable) {
         -v "$volumePath" `
         -w $dockerWorkDir `
         python:3.11-slim `
-        /bin/bash -c "pip install -r requirements.txt -t $BuildDir/ --quiet"
+        /bin/bash -c "pip install -r requirements.txt -t $BuildDir/python/ --quiet"
 
     if ($LASTEXITCODE -ne 0) {
         Write-Host "ERROR: Failed to install dependencies via Docker." -ForegroundColor Red
@@ -87,7 +91,7 @@ if ($dockerAvailable) {
     Write-Host "For production, please use Docker to get Linux-compatible dependencies." -ForegroundColor Yellow
     Write-Host ""
     
-    # คัดลอก dependencies ที่มีอยู่แล้ว (ถ้ามี)
+    # คัดลอก dependencies ที่มีอยู่แล้ว (ถ้ามี) ไปไว้ใน python/
     $dependenciesToCopy = @(
         "fastapi", "mangum", "starlette", "pydantic", "pydantic_core", "pydantic_settings",
         "opensearchpy", "multipart", "PyPDF2", "docx", "pythonjsonlogger", "watchtower",
@@ -100,8 +104,8 @@ if ($dockerAvailable) {
     foreach ($dep in $dependenciesToCopy) {
         $depPath = Join-Path "." $dep
         if (Test-Path $depPath) {
-            $destPath = Join-Path $BuildDir $dep
-            Write-Host "Copying dependency: $dep" -ForegroundColor Gray
+            $destPath = Join-Path $pythonDir $dep
+            Write-Host "Copying dependency: $dep -> python/" -ForegroundColor Gray
             Copy-Item -Path $depPath -Destination $destPath -Recurse -Force -ErrorAction SilentlyContinue
             $copiedCount++
         }
@@ -115,48 +119,22 @@ if ($dockerAvailable) {
         exit 1
     }
     
-    Write-Host "Copied $copiedCount dependencies from current directory." -ForegroundColor Green
+    Write-Host "Copied $copiedCount dependencies to python/ directory." -ForegroundColor Green
     Write-Host "WARNING: These are Windows dependencies. Lambda may fail at runtime." -ForegroundColor Yellow
-    
-    # ลบไฟล์ที่ชนกับ built-in modules ทันทีหลังจาก copy (ก่อน Step 3)
-    Write-Host "[2.1/6] Removing files that conflict with Python built-ins..." -ForegroundColor Green
-    $conflictingItems = @(
-        "http",       # folder http/
-        "http.py",    # file http.py
-        "typing.py",
-        "typing_extensions.py",  # file typing_extensions.py (conflicts with typing_extensions package)
-        "json.py",
-        "six.py"
-    )
-    
-    foreach ($item in $conflictingItems) {
-        $pathDir = Join-Path $BuildDir $item
-        if (Test-Path $pathDir) {
-            Write-Host "Removing conflicting item: $pathDir" -ForegroundColor Yellow
-            Remove-Item $pathDir -Recurse -Force -ErrorAction SilentlyContinue
-        }
-    }
 }
 
-<# Step 3: ลบไฟล์/โฟลเดอร์ที่ชนกับ Python built-in modules ใน package #>
-Write-Host "[3/6] Removing modules that conflict with Python built-ins..." -ForegroundColor Green
+<# Step 3: Cleanup - ลบไฟล์ต้องห้ามที่ root level (ถ้ามี) #>
+Write-Host "[3/6] Cleaning up root level (removing forbidden files if any)..." -ForegroundColor Green
 
-$conflictingItems = @(
-    "http",       # folder http/
-    "http.py",    # file http.py
-    "typing.py",
-    "typing_extensions.py",  # file typing_extensions.py (conflicts with typing_extensions package)
-    "json.py",
-    "six.py"
-)
+# REMOVE forbidden Python built-in shadowing files (ROOT LEVEL ONLY)
+# หมายเหตุ: ไฟล์ใน python/ (เช่น fastapi/security/http.py) ต้องเก็บไว้
+$rootForbidden = @("http.py", "typing.py")
 
-foreach ($item in $conflictingItems) {
-    $pathDir = Join-Path $BuildDir $item
-
-    if (Test-Path $pathDir) {
-        Write-Host "Removing conflicting item from package: $pathDir" -ForegroundColor Yellow
-        # รองรับทั้งไฟล์และโฟลเดอร์
-        Remove-Item $pathDir -Recurse -Force -ErrorAction SilentlyContinue
+foreach ($f in $rootForbidden) {
+    $path = Join-Path $BuildDir $f
+    if (Test-Path $path) {
+        Write-Host "Removing ROOT forbidden file: $path" -ForegroundColor Red
+        Remove-Item $path -Force
     }
 }
 
@@ -172,15 +150,15 @@ $devPackages = @(
 )
 
 foreach ($pkg in $devPackages) {
-    # ลบโฟลเดอร์ package หลัก
-    $pkgPath = Join-Path $BuildDir $pkg
+    # ลบโฟลเดอร์ package หลัก (ใน python/)
+    $pkgPath = Join-Path $pythonDir $pkg
     if (Test-Path $pkgPath) {
         Write-Host "Removing dev package directory: $pkgPath" -ForegroundColor Yellow
         Remove-Item $pkgPath -Recurse -Force -ErrorAction SilentlyContinue
     }
 
     # ลบ *.dist-info ที่เกี่ยวข้อง
-    Get-ChildItem -Path $BuildDir -Recurse -Directory -Filter "$pkg-*.dist-info" -ErrorAction SilentlyContinue | ForEach-Object {
+    Get-ChildItem -Path $pythonDir -Recurse -Directory -Filter "$pkg-*.dist-info" -ErrorAction SilentlyContinue | ForEach-Object {
         Write-Host "Removing dev package metadata: $($_.FullName)" -ForegroundColor Yellow
         Remove-Item $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
     }
@@ -189,22 +167,22 @@ foreach ($pkg in $devPackages) {
 <# Step 3.2: Cleanup ทั่วไป (ลดขนาด ZIP: dist-info, tests, __pycache__, *.pyc ฯลฯ) #>
 Write-Host "[3.2/6] Cleaning up metadata, cache, and test files..." -ForegroundColor Green
 
-# ลบ dist-info ทั้งหมด (ไม่จำเป็นตอน runtime)
-Get-ChildItem -Path $BuildDir -Recurse -Directory -Filter "*.dist-info" -ErrorAction SilentlyContinue | ForEach-Object {
+# ลบ dist-info ทั้งหมด (ไม่จำเป็นตอน runtime) - ใน python/ เท่านั้น
+Get-ChildItem -Path $pythonDir -Recurse -Directory -Filter "*.dist-info" -ErrorAction SilentlyContinue | ForEach-Object {
     Write-Host "Removing dist-info: $($_.FullName)" -ForegroundColor DarkYellow
     Remove-Item $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
 }
 
-# ลบโฟลเดอร์ tests / testing / __pycache__
-Get-ChildItem -Path $BuildDir -Recurse -Directory -ErrorAction SilentlyContinue | Where-Object {
+# ลบโฟลเดอร์ tests / testing / __pycache__ - ใน python/ เท่านั้น
+Get-ChildItem -Path $pythonDir -Recurse -Directory -ErrorAction SilentlyContinue | Where-Object {
     $_.Name -in @("tests", "test", "testing", "__pycache__")
 } | ForEach-Object {
     Write-Host "Removing test/cache directory: $($_.FullName)" -ForegroundColor DarkYellow
     Remove-Item $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
 }
 
-# ลบไฟล์ cache และไฟล์ doc ที่ไม่จำเป็น
-Get-ChildItem -Path $BuildDir -Recurse -File -ErrorAction SilentlyContinue | Where-Object {
+# ลบไฟล์ cache และไฟล์ doc ที่ไม่จำเป็น - ใน python/ เท่านั้น
+Get-ChildItem -Path $pythonDir -Recurse -File -ErrorAction SilentlyContinue | Where-Object {
     $_.Extension -in @(".pyc", ".pyo", ".pyd", ".txt", ".md", ".rst") -and $_.Name -ne "requirements.txt"
 } | ForEach-Object {
     Write-Host "Removing extra file: $($_.FullName)" -ForegroundColor DarkYellow
@@ -221,13 +199,13 @@ $awsSdkPkgs = @(
 )
 
 foreach ($pkg in $awsSdkPkgs) {
-    $pkgPath = Join-Path $BuildDir $pkg
+    $pkgPath = Join-Path $pythonDir $pkg
     if (Test-Path $pkgPath) {
         Write-Host "Removing AWS SDK directory: $pkgPath" -ForegroundColor Yellow
         Remove-Item $pkgPath -Recurse -Force -ErrorAction SilentlyContinue
     }
 
-    Get-ChildItem -Path $BuildDir -Recurse -Directory -Filter "$pkg-*.dist-info" -ErrorAction SilentlyContinue | ForEach-Object {
+    Get-ChildItem -Path $pythonDir -Recurse -Directory -Filter "$pkg-*.dist-info" -ErrorAction SilentlyContinue | ForEach-Object {
         Write-Host "Removing AWS SDK metadata: $($_.FullName)" -ForegroundColor Yellow
         Remove-Item $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
     }
@@ -235,6 +213,27 @@ foreach ($pkg in $awsSdkPkgs) {
 
 <# Step 4: copy source code (main.py, lambda_function.py, app/) เข้าไปใน package #>
 Write-Host "[4/6] Copying application source files into build directory..." -ForegroundColor Green
+
+# ตรวจสอบก่อน copy ว่า source code ไม่มีไฟล์ต้องห้ามที่ root level
+Write-Host "Checking source code for forbidden files..." -ForegroundColor Gray
+$forbiddenInSource = @("http.py", "typing.py")
+$foundInSource = @()
+
+foreach ($f in $forbiddenInSource) {
+    if (Test-Path $f) {
+        Write-Host "WARNING: Found forbidden file in source: $f" -ForegroundColor Yellow
+        $foundInSource += $f
+    }
+}
+
+if ($foundInSource.Count -gt 0) {
+    Write-Host "ERROR: Source code contains forbidden files at root level:" -ForegroundColor Red
+    foreach ($f in $foundInSource) {
+        Write-Host "  - $f" -ForegroundColor Red
+    }
+    Write-Host "Please rename or remove these files before deployment." -ForegroundColor Red
+    exit 1
+}
 
 $sources = @("main.py", "lambda_function.py", "app")
 foreach ($src in $sources) {
@@ -244,6 +243,112 @@ foreach ($src in $sources) {
     } else {
         Write-Host "WARNING: Source '$src' not found in current directory." -ForegroundColor Yellow
     }
+}
+
+<# Step 4.1: Final cleanup - Remove any conflicting files (ROOT LEVEL ONLY) AFTER copying everything #>
+Write-Host "[4.1/6] Final cleanup: Removing conflicting files at root level..." -ForegroundColor Green
+
+# REMOVE forbidden Python built-in shadowing files (ROOT LEVEL ONLY)
+# หมายเหตุ: ไฟล์ใน python/ (เช่น fastapi/security/http.py, pydantic/typing.py) ต้องเก็บไว้
+$rootForbidden = @("http.py", "typing.py")
+
+foreach ($f in $rootForbidden) {
+    $path = Join-Path $BuildDir $f
+    if (Test-Path $path) {
+        Write-Host "CRITICAL: Found forbidden file at root: $path" -ForegroundColor Red
+        Write-Host "Removing ROOT forbidden file: $path" -ForegroundColor Red
+        Remove-Item $path -Force -ErrorAction Stop
+        if (Test-Path $path) {
+            Write-Host "ERROR: Failed to remove $path" -ForegroundColor Red
+            exit 1
+        } else {
+            Write-Host "Successfully removed: $path" -ForegroundColor Green
+        }
+    }
+}
+
+<# Step 4.2: Final verification before zip - Check ROOT LEVEL and python/ directory #>
+Write-Host "[4.2/6] Final verification before zip..." -ForegroundColor Green
+
+# ตรวจสอบเฉพาะ ROOT ของ zip - ต้องไม่มีไฟล์ต้องห้าม (ใช้ Test-Path อย่างชัดเจน)
+Write-Host "Checking for forbidden files at root level..." -ForegroundColor Gray
+$httpPyPath = Join-Path $BuildDir "http.py"
+$typingPyPath = Join-Path $BuildDir "typing.py"
+
+$httpPyExists = Test-Path $httpPyPath
+$typingPyExists = Test-Path $typingPyPath
+
+if ($httpPyExists -or $typingPyExists) {
+    Write-Host "CRITICAL ERROR: Forbidden files found at ROOT level (MUST NOT DEPLOY):" -ForegroundColor Red
+    if ($httpPyExists) {
+        Write-Host "  FOUND: $httpPyPath" -ForegroundColor Red
+    }
+    if ($typingPyExists) {
+        Write-Host "  FOUND: $typingPyPath" -ForegroundColor Red
+    }
+    Write-Host "" -ForegroundColor Red
+    Write-Host "Attempting to remove..." -ForegroundColor Yellow
+    
+    if ($httpPyExists) {
+        Remove-Item $httpPyPath -Force -ErrorAction Stop
+        Write-Host "  Removed: $httpPyPath" -ForegroundColor Yellow
+    }
+    if ($typingPyExists) {
+        Remove-Item $typingPyPath -Force -ErrorAction Stop
+        Write-Host "  Removed: $typingPyPath" -ForegroundColor Yellow
+    }
+    
+    # Verify again after removal
+    $httpPyStillExists = Test-Path $httpPyPath
+    $typingPyStillExists = Test-Path $typingPyPath
+    
+    if ($httpPyStillExists -or $typingPyStillExists) {
+        Write-Host "" -ForegroundColor Red
+        Write-Host "CRITICAL ERROR: Forbidden files still present after removal attempt!" -ForegroundColor Red
+        Write-Host "Deployment ABORTED. Please check file permissions." -ForegroundColor Red
+        exit 1
+    } else {
+        Write-Host "OK: All forbidden files removed successfully" -ForegroundColor Green
+    }
+} else {
+    Write-Host "OK: No forbidden files found at root level" -ForegroundColor Green
+    Write-Host "  Test-Path lambda-package/http.py: False" -ForegroundColor Gray
+    Write-Host "  Test-Path lambda-package/typing.py: False" -ForegroundColor Gray
+}
+
+# ตรวจสอบไฟล์ที่ root level ว่ามีแค่ lambda_function.py และ main.py
+Write-Host "Checking root level files..." -ForegroundColor Gray
+$rootFiles = Get-ChildItem -Path $BuildDir -File | Select-Object -ExpandProperty Name
+Write-Host "Root level files: $($rootFiles -join ', ')" -ForegroundColor Gray
+
+$expectedRootFiles = @("lambda_function.py", "main.py")
+$unexpectedRootFiles = $rootFiles | Where-Object { $_ -notin $expectedRootFiles -and $_ -notlike "*.pyc" }
+
+if ($unexpectedRootFiles) {
+    Write-Host "WARNING: Unexpected .py files at root level: $($unexpectedRootFiles -join ', ')" -ForegroundColor Yellow
+    # ตรวจสอบว่าเป็นไฟล์ต้องห้ามหรือไม่
+    $forbiddenFound = $unexpectedRootFiles | Where-Object { $_ -in @("http.py", "typing.py") }
+    if ($forbiddenFound) {
+        Write-Host "ERROR: Forbidden files still present: $($forbiddenFound -join ', ')" -ForegroundColor Red
+        Write-Host "Deployment ABORTED." -ForegroundColor Red
+        exit 1
+    }
+} else {
+    Write-Host "OK: Root level contains only expected files (lambda_function.py, main.py)" -ForegroundColor Green
+}
+
+# ตรวจสอบว่า python/ มี dependencies อยู่
+Write-Host "Checking python/ directory..." -ForegroundColor Gray
+if (Test-Path $pythonDir) {
+    $pythonDirs = Get-ChildItem -Path $pythonDir -Directory | Select-Object -ExpandProperty Name
+    if ($pythonDirs) {
+        Write-Host "OK: python/ contains dependencies: $($pythonDirs -join ', ')" -ForegroundColor Green
+    } else {
+        Write-Host "WARNING: python/ directory is empty!" -ForegroundColor Yellow
+    }
+} else {
+    Write-Host "ERROR: python/ directory not found!" -ForegroundColor Red
+    exit 1
 }
 
 <# Step 5: zip เฉพาะ contents ภายใน lambda-package (ไม่ให้มีโฟลเดอร์ซ้อน) #>
@@ -286,7 +391,7 @@ Write-Host "Zip root should contain (at least):" -ForegroundColor Cyan
 Write-Host "- lambda_function.py" -ForegroundColor Gray
 Write-Host "- main.py" -ForegroundColor Gray
 Write-Host "- app/ (FastAPI project)" -ForegroundColor Gray
-Write-Host "- Installed site-packages (from requirements.txt)" -ForegroundColor Gray
+Write-Host "- python/ (dependencies - AWS will auto-add to sys.path)" -ForegroundColor Gray
 
 <# Step 6: deploy ด้วย aws lambda update-function-code #>
 Write-Host ""
