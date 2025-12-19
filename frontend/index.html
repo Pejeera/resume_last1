@@ -302,13 +302,25 @@
             <!-- Mode A: Resume → Jobs -->
             <div id="modeA" class="mode-content active">
                 <h2>ค้นหาตำแหน่งงานที่เหมาะกับ Resume ของคุณ</h2>
-                <form id="formModeA" onsubmit="handleModeA(event)">
+                <div id="uploadSectionA">
+                    <form id="formUploadA" onsubmit="handleUploadA(event)">
+                        <div class="form-group">
+                            <label for="resumeFileA">ขั้นตอนที่ 1: อัปโหลด Resume ไปยัง S3 (PDF/DOCX/TXT)</label>
+                            <input type="file" id="resumeFileA" accept=".pdf,.docx,.txt" required>
+                            <small style="color: #666; font-size: 0.9em; display: block; margin-top: 5px;">
+                                ไฟล์จะถูกอัปโหลดไปยัง S3 ก่อน เพื่อให้ทำงานได้เร็วขึ้น
+                            </small>
+                        </div>
+                        <button type="submit" class="btn" id="btnUploadA">📤 อัปโหลดไปยัง S3</button>
+                    </form>
+                </div>
+                <div id="searchSectionA" style="display: none; margin-top: 30px;">
                     <div class="form-group">
-                        <label for="resumeFileA">อัปโหลด Resume (PDF/DOCX/TXT)</label>
-                        <input type="file" id="resumeFileA" accept=".pdf,.docx,.txt" required>
+                        <label>Resume ID:</label>
+                        <input type="text" id="resumeIdA" readonly style="background: #f5f5f5;">
                     </div>
-                    <button type="submit" class="btn" id="btnModeA">🔍 Find Top 10 Jobs</button>
-                </form>
+                    <button type="button" class="btn" id="btnSearchA" onclick="handleSearchA()">🔍 Find Top 10 Jobs</button>
+                </div>
             </div>
 
             <!-- Mode B: Job → Resumes -->
@@ -454,7 +466,9 @@
             document.getElementById('resultsContent').innerHTML = '';
         }
 
-        async function handleModeA(event) {
+        let uploadedResumeIdA = null;
+
+        async function handleUploadA(event) {
             event.preventDefault();
             hideError();
             showLoading();
@@ -469,30 +483,55 @@
             }
 
             try {
-                // Step 1: Upload resume
+                // Step 1: Upload resume to S3 only (no processing)
                 const formData = new FormData();
                 formData.append('file', file);
 
-                const uploadResponse = await fetch(`${API_BASE_URL}/resumes/upload`, {
+                const uploadResponse = await fetch(`${API_BASE_URL}/resumes/upload_to_s3`, {
                     method: 'POST',
                     body: formData
                 });
 
                 if (!uploadResponse.ok) {
                     const error = await uploadResponse.json();
-                    throw new Error(error.detail || 'Upload failed');
+                    throw new Error(error.detail || 'Upload to S3 failed');
                 }
 
                 const uploadResult = await uploadResponse.json();
-                const resumeId = uploadResult.resume_id;
+                uploadedResumeIdA = uploadResult.resume_id;
 
-                // Step 2: Search jobs
+                // Show search section
+                document.getElementById('uploadSectionA').style.display = 'none';
+                document.getElementById('searchSectionA').style.display = 'block';
+                document.getElementById('resumeIdA').value = uploadedResumeIdA;
+
+                hideError();
+                showSuccess(`✅ อัปโหลดสำเร็จ! Resume ID: ${uploadedResumeIdA}`);
+
+            } catch (error) {
+                showError(`เกิดข้อผิดพลาด: ${error.message}`);
+            } finally {
+                hideLoading();
+            }
+        }
+
+        async function handleSearchA() {
+            if (!uploadedResumeIdA) {
+                showError('กรุณาอัปโหลด Resume ก่อน');
+                return;
+            }
+
+            hideError();
+            showLoading();
+
+            try {
+                // Step 2: Search jobs (will fetch resume from S3 and process if needed)
                 const searchResponse = await fetch(`${API_BASE_URL}/jobs/search_by_resume`, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json'
                     },
-                    body: JSON.stringify({ resume_id: resumeId })
+                    body: JSON.stringify({ resume_id: uploadedResumeIdA })
                 });
 
                 if (!searchResponse.ok) {
@@ -509,6 +548,15 @@
             } finally {
                 hideLoading();
             }
+        }
+
+        function showSuccess(message) {
+            const errorDiv = document.getElementById('errorMessage');
+            errorDiv.textContent = message;
+            errorDiv.style.background = '#d4edda';
+            errorDiv.style.color = '#155724';
+            errorDiv.style.borderLeftColor = '#28a745';
+            errorDiv.classList.add('active');
         }
 
         async function handleModeB(event) {

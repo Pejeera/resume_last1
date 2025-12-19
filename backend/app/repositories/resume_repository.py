@@ -117,6 +117,90 @@ class ResumeRepository:
     def get_resume(self, resume_id: str) -> Optional[Dict[str, Any]]:
         """Get resume by ID"""
         return self.opensearch.get_document(self.INDEX_NAME, resume_id)
+    
+    def get_resume_from_s3(self, resume_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Get resume from S3 and process it (extract text, generate embedding)
+        
+        This is used when resume was uploaded to S3 but not yet processed.
+        """
+        try:
+            # 1. Get resume from OpenSearch first (if already processed)
+            resume = self.opensearch.get_document(self.INDEX_NAME, resume_id)
+            if resume:
+                logger.info(f"Resume {resume_id} found in OpenSearch")
+                return resume
+            
+            # 2. If not in OpenSearch, get from S3 and process
+            logger.info(f"Resume {resume_id} not in OpenSearch, processing from S3...")
+            
+            # Get S3 key from resume_id (assuming format: resumes/{resume_id}/filename)
+            # We need to find the file in S3
+            from app.core.config import settings
+            
+            # Use s3_client if available, otherwise use boto3 directly
+            if hasattr(self.s3, 'client') and self.s3.client:
+                s3_client_boto = self.s3.client
+            else:
+                import boto3
+                s3_client_boto = boto3.client('s3', region_name=settings.AWS_REGION)
+            
+            # List objects with prefix
+            prefix = f"{settings.S3_PREFIX}{resume_id}/"
+            response = s3_client_boto.list_objects_v2(
+                Bucket=settings.S3_BUCKET_NAME,
+                Prefix=prefix
+            )
+            
+            if 'Contents' not in response or len(response['Contents']) == 0:
+                logger.error(f"Resume {resume_id} not found in S3")
+                return None
+            
+            # Get the first file
+            s3_key = response['Contents'][0]['Key']
+            file_name = s3_key.split('/')[-1]
+            
+            # Download file from S3
+            file_obj = s3_client_boto.get_object(
+                Bucket=settings.S3_BUCKET_NAME,
+                Key=s3_key
+            )
+            file_content = file_obj['Body'].read()
+            
+            # 3. Extract text
+            text = self.file_processor.extract_text(file_content, file_name)
+            
+            # 4. Generate embedding
+            embedding = self.bedrock.generate_embedding(text)
+            
+            # 5. Create document
+            document = {
+                "id": resume_id,
+                "name": file_name,
+                "text_excerpt": text[:500],
+                "full_text": text,
+                "embeddings": embedding,
+                "metadata": {},
+                "s3_url": f"s3://{settings.S3_BUCKET_NAME}/{s3_key}",
+                "s3_key": s3_key,
+                "created_at": datetime.utcnow().isoformat()
+            }
+            
+            # 6. Index in OpenSearch
+            self.opensearch.index_document(
+                index_name=self.INDEX_NAME,
+                doc_id=resume_id,
+                document=document
+            )
+            
+            logger.info(f"Processed and indexed resume {resume_id} from S3")
+            return document
+            
+        except Exception as e:
+            logger.error(f"Error getting resume from S3: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return None
 
 
 resume_repository = ResumeRepository()

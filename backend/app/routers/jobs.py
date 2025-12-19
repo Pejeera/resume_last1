@@ -321,18 +321,31 @@ async def search_jobs_by_resume(request: SearchByResumeRequest):
     Mode A: Search top jobs for a resume
     
     Takes resume_id and returns top 10 matching jobs
+    Will fetch resume from S3 if not already processed
     """
     try:
-        # Get resume
+        # Get resume (will fetch from S3 and process if needed)
         resume = resume_repository.get_resume(request.resume_id)
+        
+        # If not found in OpenSearch, try to get from S3 and process
+        if not resume:
+            logger.info(f"Resume {request.resume_id} not in OpenSearch, fetching from S3...")
+            resume = resume_repository.get_resume_from_s3(request.resume_id)
+        
         if not resume:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Resume {request.resume_id} not found"
+                detail=f"Resume {request.resume_id} not found in S3 or OpenSearch"
             )
         
         # Get full text from resume
         resume_text = resume.get("full_text", resume.get("text_excerpt", ""))
+        
+        if not resume_text:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Resume {request.resume_id} has no text content"
+            )
         
         # Search jobs
         results = matching_service.search_jobs_by_resume(

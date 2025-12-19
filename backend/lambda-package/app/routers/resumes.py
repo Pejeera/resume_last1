@@ -30,10 +30,56 @@ class BulkUploadResponse(BaseModel):
     failed: int
 
 
+@router.post("/upload_to_s3", response_model=ResumeUploadResponse)
+async def upload_resume_to_s3(file: UploadFile = File(...)):
+    """
+    Upload resume file to S3 only (without processing)
+    
+    This endpoint only uploads the file to S3 and returns the resume_id.
+    Processing (text extraction, embedding) will be done later when needed.
+    """
+    try:
+        if not file.filename:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No file provided"
+            )
+        
+        # Read file content
+        file_content = await file.read()
+        
+        # Upload to S3 only (no processing)
+        from app.clients.s3_client import s3_client
+        from datetime import datetime
+        
+        upload_result = s3_client.upload_file(
+            file_content=file_content,
+            file_name=file.filename,
+            content_type=file.content_type or "application/pdf"
+        )
+        
+        resume_id = upload_result["file_id"]
+        
+        logger.info(f"Uploaded resume to S3: {resume_id}")
+        return {
+            "resume_id": resume_id,
+            "s3_url": upload_result["s3_url"],
+            "name": file.filename,
+            "created_at": datetime.utcnow().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"Upload to S3 error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to upload resume to S3: {str(e)}"
+        )
+
+
 @router.post("/upload", response_model=ResumeUploadResponse)
 async def upload_resume(file: UploadFile = File(...)):
     """
-    Upload a single resume file
+    Upload a single resume file (legacy - processes immediately)
     
     Mode A: Upload resume for job matching
     """

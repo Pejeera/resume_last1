@@ -21,13 +21,41 @@ class BedrockClient:
             self.client = None
             logger.info("BedrockClient initialized in MOCK mode")
         else:
-            self.client = boto3.client(
-                'bedrock-runtime',
-                region_name=settings.BEDROCK_REGION,
-                aws_access_key_id=settings.AWS_ACCESS_KEY_ID or None,
-                aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY or None
-            )
-            logger.info(f"BedrockClient initialized for region: {settings.BEDROCK_REGION}")
+            # In Lambda, always use IAM role - don't pass credentials
+            # boto3 will automatically use the Lambda execution role
+            # Only use explicit credentials if we're NOT in Lambda environment
+            import os
+            
+            # Check if we're in Lambda (Lambda sets AWS_LAMBDA_FUNCTION_NAME)
+            is_lambda = os.environ.get('AWS_LAMBDA_FUNCTION_NAME') is not None
+            
+            if is_lambda:
+                # In Lambda: Use IAM role only - don't pass any credentials
+                self.client = boto3.client(
+                    'bedrock-runtime',
+                    region_name=settings.BEDROCK_REGION
+                )
+                logger.info(f"BedrockClient initialized using IAM role (Lambda) for region: {settings.BEDROCK_REGION}")
+            else:
+                # Local dev: Use explicit credentials if provided
+                client_kwargs = {
+                    'service_name': 'bedrock-runtime',
+                    'region_name': settings.BEDROCK_REGION
+                }
+                
+                # Only add credentials if explicitly provided (for local dev)
+                if (settings.AWS_ACCESS_KEY_ID and 
+                    settings.AWS_SECRET_ACCESS_KEY and 
+                    settings.AWS_ACCESS_KEY_ID.strip() != "" and 
+                    settings.AWS_SECRET_ACCESS_KEY.strip() != ""):
+                    client_kwargs['aws_access_key_id'] = settings.AWS_ACCESS_KEY_ID
+                    client_kwargs['aws_secret_access_key'] = settings.AWS_SECRET_ACCESS_KEY
+                    logger.info(f"BedrockClient initialized with explicit credentials for region: {settings.BEDROCK_REGION}")
+                else:
+                    # Use default credentials (from ~/.aws/credentials or environment)
+                    logger.info(f"BedrockClient initialized using default credentials for region: {settings.BEDROCK_REGION}")
+                
+                self.client = boto3.client(**client_kwargs)
     
     def generate_embedding(self, text: str) -> List[float]:
         """
@@ -50,6 +78,23 @@ class BedrockClient:
             return mock_embedding
         
         try:
+            # Cohere embedding model has max length limit of 2048 characters
+            MAX_TEXT_LENGTH = 2048
+            original_length = len(text)
+            
+            if original_length > MAX_TEXT_LENGTH:
+                # Truncate text to fit within limit
+                # Try to truncate at word boundary if possible
+                truncated = text[:MAX_TEXT_LENGTH]
+                last_space = truncated.rfind(' ')
+                if last_space > MAX_TEXT_LENGTH * 0.9:  # If we can find a space in last 10%
+                    truncated = truncated[:last_space]
+                else:
+                    truncated = truncated[:MAX_TEXT_LENGTH]
+                
+                logger.warning(f"Text truncated from {original_length} to {len(truncated)} characters (max: {MAX_TEXT_LENGTH})")
+                text = truncated
+            
             # Cohere embedding model
             if "cohere" in settings.BEDROCK_EMBEDDING_MODEL.lower():
                 body = json.dumps({
