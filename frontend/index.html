@@ -320,6 +320,7 @@
                         <select id="jobSelect" required>
                             <option value="">กำลังโหลด...</option>
                         </select>
+                        <small id="jobSelectStatus" style="color: #666; font-size: 0.9em; margin-top: 5px; display: block;"></small>
                     </div>
                     <div class="form-group">
                         <label for="resumeFilesB">อัปโหลด Resumes หลายไฟล์ (PDF/DOCX/TXT)</label>
@@ -347,7 +348,10 @@
     </div>
 
     <script>
-        const API_BASE_URL = 'http://localhost:8000/api';
+        // API Base URL - ใช้ API Gateway สำหรับ production หรือ localhost สำหรับ development
+        const API_BASE_URL = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
+            ? 'http://localhost:8000/api'
+            : 'https://k9z3rlu1ui.execute-api.us-east-1.amazonaws.com/prod/api';
         let currentResults = null;
         let currentMode = 'modeA';
         let availableJobs = [];
@@ -358,34 +362,55 @@
         });
 
         async function loadJobsList() {
+            const select = document.getElementById('jobSelect');
+            const statusEl = document.getElementById('jobSelectStatus');
+            
             try {
+                statusEl.textContent = 'กำลังโหลด jobs...';
                 const response = await fetch(`${API_BASE_URL}/jobs/list`);
+                
                 if (response.ok) {
                     const data = await response.json();
                     availableJobs = data.jobs || [];
                     updateJobSelect();
+                    
+                    if (availableJobs.length > 0) {
+                        statusEl.textContent = `พบ ${availableJobs.length} ตำแหน่งงาน`;
+                        statusEl.style.color = '#28a745';
+                    } else {
+                        statusEl.textContent = 'ไม่พบตำแหน่งงาน (กรุณา sync จาก S3 หรือสร้าง jobs ใหม่)';
+                        statusEl.style.color = '#ffc107';
+                    }
                 } else {
-                    console.error('Failed to load jobs list');
+                    const errorData = await response.json().catch(() => ({ detail: 'Unknown error' }));
+                    console.error('Failed to load jobs list:', errorData);
+                    select.innerHTML = `<option value="">❌ ไม่สามารถโหลด jobs ได้</option>`;
+                    statusEl.textContent = `Error: ${errorData.detail || 'Unknown error'}`;
+                    statusEl.style.color = '#dc3545';
                 }
             } catch (error) {
                 console.error('Error loading jobs list:', error);
+                select.innerHTML = `<option value="">❌ เกิดข้อผิดพลาด</option>`;
+                statusEl.textContent = `Network error: ${error.message}. ตรวจสอบว่า API server ทำงานอยู่หรือไม่ (${API_BASE_URL})`;
+                statusEl.style.color = '#dc3545';
             }
         }
 
         function updateJobSelect() {
             const select = document.getElementById('jobSelect');
-            select.innerHTML = '<option value="">-- เลือกตำแหน่งงาน --</option>';
             
             if (availableJobs.length === 0) {
-                select.innerHTML = '<option value="">ไม่มีตำแหน่งงาน (กรุณา seed jobs ก่อน)</option>';
+                select.innerHTML = '<option value="">ไม่มีตำแหน่งงาน (กรุณา sync จาก S3 หรือสร้าง jobs ใหม่)</option>';
                 return;
             }
 
+            select.innerHTML = '<option value="">-- เลือกตำแหน่งงาน --</option>';
             availableJobs.forEach(job => {
                 const option = document.createElement('option');
                 option.value = job.job_id;
-                option.textContent = `${job.title} (${job.job_id.substring(0, 8)}...)`;
-                option.title = job.description;
+                const jobIdShort = job.job_id ? job.job_id.substring(0, 8) : 'N/A';
+                option.textContent = `${job.title || 'N/A'} (${jobIdShort}...)`;
+                option.title = job.description || '';
                 select.appendChild(option);
             });
         }

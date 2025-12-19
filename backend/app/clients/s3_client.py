@@ -32,12 +32,17 @@ class S3Client:
             }
             
             # Only add credentials if explicitly provided (for local dev)
-            if settings.AWS_ACCESS_KEY_ID and settings.AWS_SECRET_ACCESS_KEY:
+            # Check for both None and empty string
+            if (settings.AWS_ACCESS_KEY_ID and 
+                settings.AWS_SECRET_ACCESS_KEY and 
+                settings.AWS_ACCESS_KEY_ID.strip() != "" and 
+                settings.AWS_SECRET_ACCESS_KEY.strip() != ""):
                 client_kwargs['aws_access_key_id'] = settings.AWS_ACCESS_KEY_ID
                 client_kwargs['aws_secret_access_key'] = settings.AWS_SECRET_ACCESS_KEY
                 logger.info(f"S3Client initialized with explicit credentials for bucket: {settings.S3_BUCKET_NAME}")
             else:
                 # Use IAM role (default for Lambda)
+                # Don't pass credentials - boto3 will use IAM role automatically
                 logger.info(f"S3Client initialized using IAM role for bucket: {settings.S3_BUCKET_NAME}")
             
             self.client = boto3.client(**client_kwargs)
@@ -167,7 +172,16 @@ class S3Client:
             if os.path.exists(local_file):
                 try:
                     with open(local_file, 'r', encoding='utf-8') as f:
-                        jobs_data = json.load(f)
+                        data = json.load(f)
+                    
+                    # รองรับทั้ง list และ dict format
+                    if isinstance(data, list):
+                        jobs_data = data
+                    elif isinstance(data, dict):
+                        jobs_data = data.get("jobs", [])
+                    else:
+                        jobs_data = []
+                    
                     logger.info(f"MOCK: Loaded {len(jobs_data)} jobs from {local_file}")
                     return jobs_data
                 except Exception as e:
@@ -182,7 +196,17 @@ class S3Client:
                 Bucket=settings.S3_BUCKET_NAME,
                 Key=s3_key
             )
-            jobs_data = json.loads(response['Body'].read().decode('utf-8'))
+            content = response['Body'].read().decode('utf-8')
+            data = json.loads(content)
+            
+            # รองรับทั้ง list และ dict format
+            if isinstance(data, list):
+                jobs_data = data
+            elif isinstance(data, dict):
+                jobs_data = data.get("jobs", [])
+            else:
+                jobs_data = []
+            
             logger.info(f"Loaded {len(jobs_data)} jobs from S3: {s3_key}")
             return jobs_data
         except ClientError as e:

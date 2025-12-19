@@ -2,6 +2,7 @@
 Job Router
 Handles job creation and search operations
 """
+import json
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel
 from typing import Optional
@@ -37,23 +38,43 @@ async def list_jobs():
     List all available jobs
     
     Returns list of jobs for selection in frontend
+    Tries OpenSearch first, falls back to S3 if OpenSearch is empty
     """
     try:
         from app.clients.opensearch_client import opensearch_client
+        from app.clients.s3_client import s3_client
         from app.core.config import settings
+        
+        result = []
         
         if settings.USE_MOCK:
             # Get from mock storage
             jobs = opensearch_client._mock_data_storage.get("jobs_index", [])
             result = [
                 {
-                    "job_id": job.get("_id", ""),
+                    "job_id": job.get("_id", job.get("id", "")),
                     "title": job.get("title", "N/A"),
                     "description": job.get("description", job.get("text_excerpt", ""))[:200],
                     "created_at": job.get("created_at", "")
                 }
                 for job in jobs
             ]
+            
+            # If mock storage is empty, try loading from S3
+            if len(result) == 0:
+                logger.info("Mock storage is empty, trying to load from S3...")
+                jobs_data = s3_client.load_jobs_data()
+                if jobs_data:
+                    result = [
+                        {
+                            "job_id": job.get("_id", job.get("id", job.get("job_id", ""))),
+                            "title": job.get("title", "N/A"),
+                            "description": job.get("description", job.get("text_excerpt", ""))[:200],
+                            "created_at": job.get("created_at", "")
+                        }
+                        for job in jobs_data
+                    ]
+                    logger.info(f"Loaded {len(result)} jobs from S3 for list")
         else:
             # Get from OpenSearch - use scroll API to get all jobs
             try:
@@ -72,7 +93,7 @@ async def list_jobs():
                 
                 result = [
                     {
-                        "job_id": job.get("_id", job.get("job_id", "")),
+                        "job_id": job.get("_id", job.get("job_id", job.get("id", ""))),
                         "title": job.get("title", "N/A"),
                         "description": job.get("description", job.get("text_excerpt", ""))[:200],
                         "created_at": job.get("created_at", "")
@@ -82,6 +103,65 @@ async def list_jobs():
             except Exception as e:
                 logger.error(f"Error listing jobs from OpenSearch: {e}")
                 result = []
+            
+            # If OpenSearch is empty, try loading from S3 as fallback
+            if len(result) == 0:
+                logger.info("OpenSearch is empty, trying to load from S3 as fallback...")
+                try:
+                    jobs_data = s3_client.load_jobs_data()
+                    if jobs_data and len(jobs_data) > 0:
+                        result = [
+                            {
+                                "job_id": job.get("_id", job.get("id", job.get("job_id", ""))),
+                                "title": job.get("title", "N/A"),
+                                "description": job.get("description", job.get("text_excerpt", ""))[:200],
+                                "created_at": job.get("created_at", "")
+                            }
+                            for job in jobs_data
+                        ]
+                        logger.info(f"Loaded {len(result)} jobs from S3 as fallback")
+                    else:
+                        logger.warning("No jobs found in S3 either. jobs_data.json may not exist or is empty.")
+                except Exception as s3_error:
+                    logger.error(f"Error loading jobs from S3: {s3_error}")
+                    # Try alternative paths in S3
+                    logger.info("Trying alternative S3 paths...")
+                    try:
+                        # Try root level
+                        from botocore.exceptions import ClientError
+                        if hasattr(s3_client, 'client') and s3_client.client:
+                            try:
+                                response = s3_client.client.get_object(
+                                    Bucket=settings.S3_BUCKET_NAME,
+                                    Key="jobs_data.json"
+                                )
+                                content = response['Body'].read().decode('utf-8')
+                                data = json.loads(content)
+                                
+                                # รองรับทั้ง list และ dict format
+                                if isinstance(data, list):
+                                    jobs_data = data
+                                elif isinstance(data, dict):
+                                    jobs_data = data.get("jobs", [])
+                                else:
+                                    jobs_data = []
+                                
+                                if jobs_data and len(jobs_data) > 0:
+                                    result = [
+                                        {
+                                            "job_id": job.get("_id", job.get("id", job.get("job_id", ""))),
+                                            "title": job.get("title", "N/A"),
+                                            "description": job.get("description", job.get("text_excerpt", ""))[:200],
+                                            "created_at": job.get("created_at", "")
+                                        }
+                                        for job in jobs_data
+                                    ]
+                                    logger.info(f"Loaded {len(result)} jobs from S3 root (jobs_data.json)")
+                            except ClientError as ce:
+                                if ce.response['Error']['Code'] != 'NoSuchKey':
+                                    logger.error(f"S3 error: {ce}")
+                    except Exception as alt_error:
+                        logger.error(f"Alternative S3 path also failed: {alt_error}")
         
         logger.info(f"Listed {len(result)} jobs")
         return {
@@ -174,6 +254,8 @@ async def sync_jobs_from_s3():
         # Index each job to OpenSearch
         synced_count = 0
         skipped_count = 0
+        from app.clients.bedrock_client import bedrock_client
+        
         for job_data in jobs_data:
             try:
                 # Extract job ID and document
@@ -190,6 +272,18 @@ async def sync_jobs_from_s3():
                 # Ensure required fields exist
                 if "id" not in document:
                     document["id"] = job_id
+                
+                # Generate embedding if not already present
+                if "embeddings" not in document or not document.get("embeddings"):
+                    logger.info(f"Generating embedding for job {job_id}")
+                    full_text = f"{document.get('title', '')}\n{document.get('description', '')}"
+                    try:
+                        embedding = bedrock_client.generate_embedding(full_text)
+                        document["embeddings"] = embedding
+                        logger.info(f"Generated embedding for job {job_id} (dimension: {len(embedding)})")
+                    except Exception as e:
+                        logger.error(f"Failed to generate embedding for job {job_id}: {e}")
+                        # Continue without embedding (will be skipped in vector search)
                 
                 # Index to OpenSearch
                 opensearch_client.index_document(

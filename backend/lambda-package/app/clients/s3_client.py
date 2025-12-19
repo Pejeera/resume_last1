@@ -24,23 +24,42 @@ class S3Client:
             self.client = None
             logger.info("S3Client initialized in MOCK mode")
         else:
-            # Use IAM role credentials if no explicit credentials provided
-            # This allows Lambda to use its IAM role automatically
-            client_kwargs = {
-                'service_name': 's3',
-                'region_name': settings.AWS_REGION
-            }
+            # In Lambda, always use IAM role - don't pass credentials
+            # boto3 will automatically use the Lambda execution role
+            # Only use explicit credentials if we're NOT in Lambda environment
+            import os
             
-            # Only add credentials if explicitly provided (for local dev)
-            if settings.AWS_ACCESS_KEY_ID and settings.AWS_SECRET_ACCESS_KEY:
-                client_kwargs['aws_access_key_id'] = settings.AWS_ACCESS_KEY_ID
-                client_kwargs['aws_secret_access_key'] = settings.AWS_SECRET_ACCESS_KEY
-                logger.info(f"S3Client initialized with explicit credentials for bucket: {settings.S3_BUCKET_NAME}")
+            # Check if we're in Lambda (Lambda sets AWS_LAMBDA_FUNCTION_NAME)
+            is_lambda = os.environ.get('AWS_LAMBDA_FUNCTION_NAME') is not None
+            
+            if is_lambda:
+                # In Lambda: Use IAM role only - don't pass any credentials
+                self.client = boto3.client(
+                    's3',
+                    region_name=settings.AWS_REGION
+                )
+                logger.info(f"S3Client initialized using IAM role (Lambda) for bucket: {settings.S3_BUCKET_NAME}")
             else:
-                # Use IAM role (default for Lambda)
-                logger.info(f"S3Client initialized using IAM role for bucket: {settings.S3_BUCKET_NAME}")
-            
-            self.client = boto3.client(**client_kwargs)
+                # Local dev: Use explicit credentials if provided
+                client_kwargs = {
+                    'service_name': 's3',
+                    'region_name': settings.AWS_REGION
+                }
+                
+                # Only add credentials if explicitly provided (for local dev)
+                # Check for both None and empty string
+                if (settings.AWS_ACCESS_KEY_ID and 
+                    settings.AWS_SECRET_ACCESS_KEY and 
+                    settings.AWS_ACCESS_KEY_ID.strip() != "" and 
+                    settings.AWS_SECRET_ACCESS_KEY.strip() != ""):
+                    client_kwargs['aws_access_key_id'] = settings.AWS_ACCESS_KEY_ID
+                    client_kwargs['aws_secret_access_key'] = settings.AWS_SECRET_ACCESS_KEY
+                    logger.info(f"S3Client initialized with explicit credentials for bucket: {settings.S3_BUCKET_NAME}")
+                else:
+                    # Use default credentials (from ~/.aws/credentials or environment)
+                    logger.info(f"S3Client initialized using default credentials for bucket: {settings.S3_BUCKET_NAME}")
+                
+                self.client = boto3.client(**client_kwargs)
     
     def upload_file(self, file_content: bytes, file_name: str, content_type: str = "application/octet-stream") -> dict:
         """
@@ -167,7 +186,16 @@ class S3Client:
             if os.path.exists(local_file):
                 try:
                     with open(local_file, 'r', encoding='utf-8') as f:
-                        jobs_data = json.load(f)
+                        data = json.load(f)
+                    
+                    # รองรับทั้ง list และ dict format
+                    if isinstance(data, list):
+                        jobs_data = data
+                    elif isinstance(data, dict):
+                        jobs_data = data.get("jobs", [])
+                    else:
+                        jobs_data = []
+                    
                     logger.info(f"MOCK: Loaded {len(jobs_data)} jobs from {local_file}")
                     return jobs_data
                 except Exception as e:
@@ -182,7 +210,17 @@ class S3Client:
                 Bucket=settings.S3_BUCKET_NAME,
                 Key=s3_key
             )
-            jobs_data = json.loads(response['Body'].read().decode('utf-8'))
+            content = response['Body'].read().decode('utf-8')
+            data = json.loads(content)
+            
+            # รองรับทั้ง list และ dict format
+            if isinstance(data, list):
+                jobs_data = data
+            elif isinstance(data, dict):
+                jobs_data = data.get("jobs", [])
+            else:
+                jobs_data = []
+            
             logger.info(f"Loaded {len(jobs_data)} jobs from S3: {s3_key}")
             return jobs_data
         except ClientError as e:
