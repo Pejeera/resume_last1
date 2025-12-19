@@ -231,6 +231,21 @@ class S3Client:
             return []
 
 
-# Singleton instance
-s3_client = S3Client()
+# Singleton instance - lazy initialization to avoid init timeout
+_s3_client_instance = None
+
+def get_s3_client():
+    """Get or create S3 client instance (lazy initialization)"""
+    global _s3_client_instance
+    if _s3_client_instance is None:
+        _s3_client_instance = S3Client()
+    return _s3_client_instance
+
+# For backward compatibility - create a simple wrapper
+class S3ClientWrapper:
+    """Wrapper to maintain backward compatibility"""
+    def __getattr__(self, name):
+        return getattr(get_s3_client(), name)
+
+s3_client = S3ClientWrapper()
 

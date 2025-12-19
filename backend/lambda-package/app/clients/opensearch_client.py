@@ -29,8 +29,22 @@ class OpenSearchClient:
             self._load_jobs_from_s3()
             logger.info("OpenSearchClient initialized in MOCK mode")
         else:
+            # Parse endpoint URL properly
+            endpoint = settings.OPENSEARCH_ENDPOINT
+            # Remove protocol
+            host = endpoint.replace('https://', '').replace('http://', '')
+            # Remove port if included in URL
+            if ':' in host:
+                host, port_str = host.rsplit(':', 1)
+                try:
+                    port = int(port_str)
+                except ValueError:
+                    port = 443 if endpoint.startswith('https://') else 80
+            else:
+                port = 443 if endpoint.startswith('https://') else 80
+            
             self.client = OpenSearch(
-                hosts=[{'host': settings.OPENSEARCH_ENDPOINT.replace('https://', '').replace('http://', ''), 'port': 443}],
+                hosts=[{'host': host, 'port': port}],
                 http_auth=(settings.OPENSEARCH_USERNAME, settings.OPENSEARCH_PASSWORD),
                 use_ssl=settings.OPENSEARCH_USE_SSL,
                 verify_certs=settings.OPENSEARCH_VERIFY_CERTS,
