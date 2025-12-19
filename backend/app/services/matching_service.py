@@ -120,6 +120,7 @@ class MatchingService:
         self,
         job_description: str,
         job_id: Optional[str] = None,
+        resume_ids: Optional[List[str]] = None,
         top_k_initial: int = 100,
         top_k_final: int = 10
     ) -> List[Dict[str, Any]]:
@@ -143,25 +144,60 @@ class MatchingService:
             # 2. Vector search in resumes index
             logger.info(f"Searching resumes index (top_k={top_k_initial})")
             
-            # Log available resumes count
-            available_resumes_count = None
-            if settings.USE_MOCK:
-                from app.clients.opensearch_client import opensearch_client
-                available_resumes = opensearch_client._mock_data_storage.get(self.RESUMES_INDEX, [])
-                available_resumes_count = len(available_resumes)
-                logger.info(f"Available resumes in index: {available_resumes_count}")
-            
-            candidates = self.opensearch.vector_search(
-                index_name=self.RESUMES_INDEX,
-                query_vector=job_embedding,
-                top_k=top_k_initial
-            )
-            
-            if not candidates:
-                logger.warning(f"No resumes found in vector search. Available resumes in index: {available_resumes_count if available_resumes_count is not None else 'N/A'}")
-                return []
-            
-            logger.info(f"Found {len(candidates)} candidates from vector search")
+            # If resume_ids provided, filter to only those resumes
+            if resume_ids:
+                logger.info(f"Filtering to {len(resume_ids)} specified resumes")
+                from app.repositories.resume_repository import resume_repository
+                import numpy as np
+                
+                # Get resumes by IDs and calculate similarity
+                candidates = []
+                for resume_id in resume_ids:
+                    resume = resume_repository.get_resume(resume_id)
+                    if not resume:
+                        # Try to get from S3
+                        resume = resume_repository.get_resume_from_s3(resume_id)
+                    
+                    if resume:
+                        # Calculate similarity score
+                        resume_embedding = resume.get("embeddings")
+                        if resume_embedding:
+                            try:
+                                # Calculate cosine similarity
+                                dot_product = np.dot(job_embedding, resume_embedding)
+                                norm_a = np.linalg.norm(job_embedding)
+                                norm_b = np.linalg.norm(resume_embedding)
+                                similarity = dot_product / (norm_a * norm_b) if (norm_a * norm_b) > 0 else 0.0
+                                
+                                resume["_score"] = float(similarity)
+                                resume["_id"] = resume.get("id", resume_id)
+                                candidates.append(resume)
+                            except Exception as e:
+                                logger.error(f"Error calculating similarity for resume {resume_id}: {e}")
+                
+                # Sort by score
+                candidates.sort(key=lambda x: x.get("_score", 0), reverse=True)
+                logger.info(f"Found {len(candidates)} candidates from specified resumes")
+            else:
+                # Log available resumes count
+                available_resumes_count = None
+                if settings.USE_MOCK:
+                    from app.clients.opensearch_client import opensearch_client
+                    available_resumes = opensearch_client._mock_data_storage.get(self.RESUMES_INDEX, [])
+                    available_resumes_count = len(available_resumes)
+                    logger.info(f"Available resumes in index: {available_resumes_count}")
+                
+                candidates = self.opensearch.vector_search(
+                    index_name=self.RESUMES_INDEX,
+                    query_vector=job_embedding,
+                    top_k=top_k_initial
+                )
+                
+                if not candidates:
+                    logger.warning(f"No resumes found in vector search. Available resumes in index: {available_resumes_count if available_resumes_count is not None else 'N/A'}")
+                    return []
+                
+                logger.info(f"Found {len(candidates)} candidates from vector search")
             
             # 3. Prepare candidates for reranking
             candidates_for_rerank = []

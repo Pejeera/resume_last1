@@ -291,6 +291,7 @@
         </div>
 
         <div class="tabs">
+            <button class="tab" onclick="switchMode('upload')">📤 อัปโหลด Resume</button>
             <button class="tab active" onclick="switchMode('modeA')">โหมด A: Resume → Jobs</button>
             <button class="tab" onclick="switchMode('modeB')">โหมด B: Job → Resumes</button>
         </div>
@@ -299,28 +300,38 @@
             <!-- Error Message -->
             <div class="error" id="errorMessage"></div>
 
+            <!-- Upload Tab: Upload Resume to S3 -->
+            <div id="upload" class="mode-content">
+                <h2>อัปโหลด Resume ไปยัง S3</h2>
+                <form id="formUpload" onsubmit="handleUpload(event)">
+                    <div class="form-group">
+                        <label for="resumeFile">เลือกไฟล์ Resume (PDF/DOCX/TXT)</label>
+                        <input type="file" id="resumeFile" accept=".pdf,.docx,.txt" required>
+                        <small style="color: #666; font-size: 0.9em; display: block; margin-top: 5px;">
+                            ไฟล์จะถูกอัปโหลดไปยัง S3 และสามารถใช้ในโหมด A และ B ได้
+                        </small>
+                    </div>
+                    <button type="submit" class="btn" id="btnUpload">📤 อัปโหลดไปยัง S3</button>
+                </form>
+                <div id="uploadResult" style="display: none; margin-top: 20px; padding: 15px; background: #d4edda; border-radius: 8px; color: #155724;">
+                    <strong>✅ อัปโหลดสำเร็จ!</strong>
+                    <p id="uploadResultText"></p>
+                </div>
+            </div>
+
             <!-- Mode A: Resume → Jobs -->
             <div id="modeA" class="mode-content active">
                 <h2>ค้นหาตำแหน่งงานที่เหมาะกับ Resume ของคุณ</h2>
-                <div id="uploadSectionA">
-                    <form id="formUploadA" onsubmit="handleUploadA(event)">
-                        <div class="form-group">
-                            <label for="resumeFileA">ขั้นตอนที่ 1: อัปโหลด Resume ไปยัง S3 (PDF/DOCX/TXT)</label>
-                            <input type="file" id="resumeFileA" accept=".pdf,.docx,.txt" required>
-                            <small style="color: #666; font-size: 0.9em; display: block; margin-top: 5px;">
-                                ไฟล์จะถูกอัปโหลดไปยัง S3 ก่อน เพื่อให้ทำงานได้เร็วขึ้น
-                            </small>
-                        </div>
-                        <button type="submit" class="btn" id="btnUploadA">📤 อัปโหลดไปยัง S3</button>
-                    </form>
-                </div>
-                <div id="searchSectionA" style="display: none; margin-top: 30px;">
+                <form id="formModeA" onsubmit="handleModeA(event)">
                     <div class="form-group">
-                        <label>Resume ID:</label>
-                        <input type="text" id="resumeIdA" readonly style="background: #f5f5f5;">
+                        <label for="resumeSelectA">เลือก Resume จาก S3</label>
+                        <select id="resumeSelectA" required>
+                            <option value="">กำลังโหลด...</option>
+                        </select>
+                        <small id="resumeSelectAStatus" style="color: #666; font-size: 0.9em; margin-top: 5px; display: block;"></small>
                     </div>
-                    <button type="button" class="btn" id="btnSearchA" onclick="handleSearchA()">🔍 Find Top 10 Jobs</button>
-                </div>
+                    <button type="submit" class="btn" id="btnModeA">🔍 Find Top 10 Jobs</button>
+                </form>
             </div>
 
             <!-- Mode B: Job → Resumes -->
@@ -335,8 +346,13 @@
                         <small id="jobSelectStatus" style="color: #666; font-size: 0.9em; margin-top: 5px; display: block;"></small>
                     </div>
                     <div class="form-group">
-                        <label for="resumeFilesB">อัปโหลด Resumes หลายไฟล์ (PDF/DOCX/TXT)</label>
-                        <input type="file" id="resumeFilesB" accept=".pdf,.docx,.txt" multiple required>
+                        <label for="resumeSelectB">เลือก Resumes จาก S3 (หลายไฟล์)</label>
+                        <select id="resumeSelectB" multiple required style="min-height: 150px;">
+                            <option value="">กำลังโหลด...</option>
+                        </select>
+                        <small id="resumeSelectBStatus" style="color: #666; font-size: 0.9em; margin-top: 5px; display: block;">
+                            กด Ctrl (หรือ Cmd บน Mac) เพื่อเลือกหลายไฟล์
+                        </small>
                     </div>
                     <button type="submit" class="btn" id="btnModeB">🔍 Find Top 10 Resumes</button>
                 </form>
@@ -426,6 +442,104 @@
                 select.appendChild(option);
             });
         }
+        
+        async function loadResumesList() {
+            const selectA = document.getElementById('resumeSelectA');
+            const selectB = document.getElementById('resumeSelectB');
+            const statusA = document.getElementById('resumeSelectAStatus');
+            const statusB = document.getElementById('resumeSelectBStatus');
+            
+            try {
+                if (statusA) statusA.textContent = 'กำลังโหลด resumes...';
+                if (statusB) statusB.textContent = 'กำลังโหลด resumes...';
+                
+                const response = await fetch(`${API_BASE_URL}/resumes/list`);
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    availableResumes = data.resumes || [];
+                    updateResumeSelects();
+                    
+                    if (availableResumes.length > 0) {
+                        if (statusA) {
+                            statusA.textContent = `พบ ${availableResumes.length} resumes`;
+                            statusA.style.color = '#28a745';
+                        }
+                        if (statusB) {
+                            statusB.textContent = `พบ ${availableResumes.length} resumes (กด Ctrl/Cmd เพื่อเลือกหลายไฟล์)`;
+                            statusB.style.color = '#28a745';
+                        }
+                    } else {
+                        if (statusA) {
+                            statusA.textContent = 'ไม่พบ resumes (กรุณาอัปโหลดในหน้าอัปโหลด)';
+                            statusA.style.color = '#ffc107';
+                        }
+                        if (statusB) {
+                            statusB.textContent = 'ไม่พบ resumes (กรุณาอัปโหลดในหน้าอัปโหลด)';
+                            statusB.style.color = '#ffc107';
+                        }
+                    }
+                } else {
+                    const errorData = await response.json().catch(() => ({ detail: 'Unknown error' }));
+                    console.error('Failed to load resumes list:', errorData);
+                    if (selectA) selectA.innerHTML = `<option value="">❌ ไม่สามารถโหลด resumes ได้</option>`;
+                    if (selectB) selectB.innerHTML = `<option value="">❌ ไม่สามารถโหลด resumes ได้</option>`;
+                    if (statusA) {
+                        statusA.textContent = `Error: ${errorData.detail || 'Unknown error'}`;
+                        statusA.style.color = '#dc3545';
+                    }
+                    if (statusB) {
+                        statusB.textContent = `Error: ${errorData.detail || 'Unknown error'}`;
+                        statusB.style.color = '#dc3545';
+                    }
+                }
+            } catch (error) {
+                console.error('Error loading resumes list:', error);
+                if (selectA) selectA.innerHTML = `<option value="">❌ เกิดข้อผิดพลาด</option>`;
+                if (selectB) selectB.innerHTML = `<option value="">❌ เกิดข้อผิดพลาด</option>`;
+                if (statusA) {
+                    statusA.textContent = `Network error: ${error.message}`;
+                    statusA.style.color = '#dc3545';
+                }
+                if (statusB) {
+                    statusB.textContent = `Network error: ${error.message}`;
+                    statusB.style.color = '#dc3545';
+                }
+            }
+        }
+        
+        function updateResumeSelects() {
+            const selectA = document.getElementById('resumeSelectA');
+            const selectB = document.getElementById('resumeSelectB');
+            
+            if (availableResumes.length === 0) {
+                if (selectA) selectA.innerHTML = '<option value="">ไม่มี resumes (กรุณาอัปโหลดในหน้าอัปโหลด)</option>';
+                if (selectB) selectB.innerHTML = '<option value="">ไม่มี resumes (กรุณาอัปโหลดในหน้าอัปโหลด)</option>';
+                return;
+            }
+            
+            if (selectA) {
+                selectA.innerHTML = '<option value="">-- เลือก Resume --</option>';
+                availableResumes.forEach(resume => {
+                    const option = document.createElement('option');
+                    option.value = resume.resume_id;
+                    option.textContent = `${resume.name || 'N/A'} (ID: ${resume.resume_id.substring(0, 8)}...)`;
+                    option.title = resume.s3_url || '';
+                    selectA.appendChild(option);
+                });
+            }
+            
+            if (selectB) {
+                selectB.innerHTML = '';
+                availableResumes.forEach(resume => {
+                    const option = document.createElement('option');
+                    option.value = resume.resume_id;
+                    option.textContent = `${resume.name || 'N/A'} (ID: ${resume.resume_id.substring(0, 8)}...)`;
+                    option.title = resume.s3_url || '';
+                    selectB.appendChild(option);
+                });
+            }
+        }
 
         function switchMode(mode) {
             currentMode = mode;
@@ -439,6 +553,11 @@
             
             // Clear results
             clearResults();
+            
+            // Reload resumes list when switching to mode A or B
+            if (mode === 'modeA' || mode === 'modeB') {
+                loadResumesList();
+            }
         }
 
         function showError(message) {
@@ -466,14 +585,13 @@
             document.getElementById('resultsContent').innerHTML = '';
         }
 
-        let uploadedResumeIdA = null;
-
-        async function handleUploadA(event) {
+        // Upload Tab Handler
+        async function handleUpload(event) {
             event.preventDefault();
             hideError();
             showLoading();
 
-            const fileInput = document.getElementById('resumeFileA');
+            const fileInput = document.getElementById('resumeFile');
             const file = fileInput.files[0];
 
             if (!file) {
@@ -483,7 +601,6 @@
             }
 
             try {
-                // Step 1: Upload resume to S3 only (no processing)
                 const formData = new FormData();
                 formData.append('file', file);
 
@@ -498,15 +615,25 @@
                 }
 
                 const uploadResult = await uploadResponse.json();
-                uploadedResumeIdA = uploadResult.resume_id;
-
-                // Show search section
-                document.getElementById('uploadSectionA').style.display = 'none';
-                document.getElementById('searchSectionA').style.display = 'block';
-                document.getElementById('resumeIdA').value = uploadedResumeIdA;
-
+                
+                // Show success message
+                const uploadResultDiv = document.getElementById('uploadResult');
+                const uploadResultText = document.getElementById('uploadResultText');
+                uploadResultText.innerHTML = `
+                    <strong>Resume ID:</strong> ${uploadResult.resume_id}<br>
+                    <strong>ชื่อไฟล์:</strong> ${uploadResult.name}<br>
+                    <strong>S3 URL:</strong> ${uploadResult.s3_url}
+                `;
+                uploadResultDiv.style.display = 'block';
+                
+                // Reset form
+                fileInput.value = '';
+                
+                // Reload resumes list
+                await loadResumesList();
+                
                 hideError();
-                showSuccess(`✅ อัปโหลดสำเร็จ! Resume ID: ${uploadedResumeIdA}`);
+                showSuccess(`✅ อัปโหลดสำเร็จ! Resume ID: ${uploadResult.resume_id}`);
 
             } catch (error) {
                 showError(`เกิดข้อผิดพลาด: ${error.message}`);
@@ -515,23 +642,29 @@
             }
         }
 
-        async function handleSearchA() {
-            if (!uploadedResumeIdA) {
-                showError('กรุณาอัปโหลด Resume ก่อน');
-                return;
-            }
-
+        // Mode A Handler
+        async function handleModeA(event) {
+            event.preventDefault();
             hideError();
             showLoading();
 
+            const resumeSelect = document.getElementById('resumeSelectA');
+            const selectedResumeId = resumeSelect.value;
+
+            if (!selectedResumeId) {
+                showError('กรุณาเลือก Resume');
+                hideLoading();
+                return;
+            }
+
             try {
-                // Step 2: Search jobs (will fetch resume from S3 and process if needed)
+                // Search jobs (will fetch resume from S3 and process if needed)
                 const searchResponse = await fetch(`${API_BASE_URL}/jobs/search_by_resume`, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json'
                     },
-                    body: JSON.stringify({ resume_id: uploadedResumeIdA })
+                    body: JSON.stringify({ resume_id: selectedResumeId })
                 });
 
                 if (!searchResponse.ok) {
@@ -566,8 +699,8 @@
 
             const jobSelect = document.getElementById('jobSelect');
             const selectedJobId = jobSelect.value;
-            const fileInput = document.getElementById('resumeFilesB');
-            const files = fileInput.files;
+            const resumeSelect = document.getElementById('resumeSelectB');
+            const selectedResumeIds = Array.from(resumeSelect.selectedOptions).map(opt => opt.value).filter(id => id);
 
             if (!selectedJobId) {
                 showError('กรุณาเลือกตำแหน่งงาน');
@@ -575,34 +708,21 @@
                 return;
             }
 
-            if (files.length === 0) {
-                showError('กรุณาเลือกไฟล์ Resume อย่างน้อย 1 ไฟล์');
+            if (selectedResumeIds.length === 0) {
+                showError('กรุณาเลือก Resume อย่างน้อย 1 ไฟล์');
                 hideLoading();
                 return;
             }
 
             try {
-                // Step 1: Bulk upload resumes
-                const formData = new FormData();
-                for (let i = 0; i < files.length; i++) {
-                    formData.append('files', files[i]);
-                }
-
-                const uploadResponse = await fetch(`${API_BASE_URL}/resumes/bulk_upload`, {
-                    method: 'POST',
-                    body: formData
-                });
-
-                if (!uploadResponse.ok) {
-                    const error = await uploadResponse.json();
-                    throw new Error(error.detail || 'Upload failed');
-                }
-
-                const uploadResult = await uploadResponse.json();
-
-                // Step 2: Search resumes by job
+                // Search resumes by job using selected resume IDs from S3
+                // Note: This will process resumes from S3 if needed
                 const searchResponse = await fetch(`${API_BASE_URL}/resumes/search_by_job?job_id=${encodeURIComponent(selectedJobId)}`, {
-                    method: 'POST'
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ resume_ids: selectedResumeIds })
                 });
 
                 if (!searchResponse.ok) {

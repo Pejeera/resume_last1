@@ -145,21 +145,46 @@ class ResumeRepository:
                 import boto3
                 s3_client_boto = boto3.client('s3', region_name=settings.AWS_REGION)
             
-            # List objects with prefix (new structure: Candidate-{resume_id}/)
-            candidate_folder = f"Candidate-{resume_id}"
-            prefix = f"{settings.S3_PREFIX}{candidate_folder}/"
+            # Get file from Candidate folder (structure: resumes/Candidate/{filename})
+            # We need to find the file by resume_id in metadata or by searching
+            # Since we store resume_id in metadata, we'll search in Candidate folder
+            candidate_prefix = f"{settings.S3_PREFIX}Candidate/"
+            
+            # List all files in Candidate folder and find by resume_id in metadata
             response = s3_client_boto.list_objects_v2(
                 Bucket=settings.S3_BUCKET_NAME,
-                Prefix=prefix
+                Prefix=candidate_prefix
             )
             
-            if 'Contents' not in response or len(response['Contents']) == 0:
-                logger.error(f"Resume {resume_id} not found in S3 (Candidate-{resume_id})")
-                return None
+            s3_key = None
+            file_name = None
             
-            # Get the first file
-            s3_key = response['Contents'][0]['Key']
-            file_name = s3_key.split('/')[-1]
+            if 'Contents' in response:
+                for obj in response['Contents']:
+                    # Check metadata for resume_id
+                    try:
+                        obj_metadata = s3_client_boto.head_object(
+                            Bucket=settings.S3_BUCKET_NAME,
+                            Key=obj['Key']
+                        )
+                        metadata = obj_metadata.get('Metadata', {})
+                        if metadata.get('resume_id') == resume_id:
+                            s3_key = obj['Key']
+                            file_name = obj['Key'].split('/')[-1]
+                            break
+                    except:
+                        continue
+            
+            # If not found by metadata, try to get from OpenSearch document if available
+            if not s3_key:
+                # Try to get s3_key from OpenSearch document
+                resume_doc = self.opensearch.get_document(self.INDEX_NAME, resume_id)
+                if resume_doc and 's3_key' in resume_doc:
+                    s3_key = resume_doc['s3_key']
+                    file_name = s3_key.split('/')[-1]
+                else:
+                    logger.error(f"Resume {resume_id} not found in S3 Candidate folder")
+                    return None
             
             # Download file from S3
             file_obj = s3_client_boto.get_object(

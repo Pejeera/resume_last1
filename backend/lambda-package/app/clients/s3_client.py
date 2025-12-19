@@ -24,29 +24,22 @@ class S3Client:
             self.client = None
             logger.info("S3Client initialized in MOCK mode")
         else:
-            # In Lambda, always use IAM role - don't pass credentials
-            # boto3 will automatically use the Lambda execution role
-            # Only use explicit credentials if we're NOT in Lambda environment
-            import os
+            # Use IAM role credentials if no explicit credentials provided
+            # This allows Lambda to use its IAM role automatically
+            client_kwargs = {
+                'service_name': 's3',
+                'region_name': settings.AWS_REGION
+            }
             
-            # Check if we're in Lambda (Lambda sets AWS_LAMBDA_FUNCTION_NAME)
+            # In Lambda, always use IAM role (don't pass credentials)
+            # Only use explicit credentials for local development
             is_lambda = os.environ.get('AWS_LAMBDA_FUNCTION_NAME') is not None
             
             if is_lambda:
-                # In Lambda: Use IAM role only - don't pass any credentials
-                self.client = boto3.client(
-                    's3',
-                    region_name=settings.AWS_REGION
-                )
-                logger.info(f"S3Client initialized using IAM role (Lambda) for bucket: {settings.S3_BUCKET_NAME}")
+                # Lambda environment - use IAM role, don't pass credentials
+                logger.info(f"S3Client initialized using IAM role for bucket: {settings.S3_BUCKET_NAME} (Lambda environment)")
             else:
-                # Local dev: Use explicit credentials if provided
-                client_kwargs = {
-                    'service_name': 's3',
-                    'region_name': settings.AWS_REGION
-                }
-                
-                # Only add credentials if explicitly provided (for local dev)
+                # Local development - only add credentials if explicitly provided
                 # Check for both None and empty string
                 if (settings.AWS_ACCESS_KEY_ID and 
                     settings.AWS_SECRET_ACCESS_KEY and 
@@ -58,14 +51,15 @@ class S3Client:
                 else:
                     # Use default credentials (from ~/.aws/credentials or environment)
                     logger.info(f"S3Client initialized using default credentials for bucket: {settings.S3_BUCKET_NAME}")
-                
-                self.client = boto3.client(**client_kwargs)
+            
+            self.client = boto3.client(**client_kwargs)
     
     def upload_file(self, file_content: bytes, file_name: str, content_type: str = "application/octet-stream") -> dict:
         """
         Upload file to S3
         
-        Structure: resumes/Candidate-{resume_id}/resume.pdf
+        Structure: resumes/Candidate/{original_filename}
+        All resumes stored in Candidate folder with original filename
         
         Returns:
             dict with keys: file_id, s3_url, s3_key
@@ -73,10 +67,8 @@ class S3Client:
         if settings.USE_MOCK:
             # Mock response
             file_id = str(uuid.uuid4())
-            # Use folder structure: Candidate-{resume_id}/original_filename
-            candidate_folder = f"Candidate-{file_id}"
-            # Keep original filename
-            s3_key = f"{settings.S3_PREFIX}{candidate_folder}/{file_name}"
+            # Structure: resumes/Candidate/{original_filename}
+            s3_key = f"{settings.S3_PREFIX}Candidate/{file_name}"
             s3_url = f"s3://{settings.S3_BUCKET_NAME}/{s3_key}"
             logger.info(f"MOCK: Uploaded file {file_name} to {s3_url}")
             return {
@@ -88,10 +80,9 @@ class S3Client:
         
         try:
             file_id = str(uuid.uuid4())
-            # Use folder structure: Candidate-{resume_id}/original_filename
-            candidate_folder = f"Candidate-{file_id}"
-            # Keep original filename
-            s3_key = f"{settings.S3_PREFIX}{candidate_folder}/{file_name}"
+            # Structure: resumes/Candidate/{original_filename}
+            # Use original filename, all resumes in Candidate folder
+            s3_key = f"{settings.S3_PREFIX}Candidate/{file_name}"
             
             self.client.put_object(
                 Bucket=settings.S3_BUCKET_NAME,
@@ -101,12 +92,12 @@ class S3Client:
                 Metadata={
                     "uploaded_at": datetime.utcnow().isoformat(),
                     "original_filename": file_name,
-                    "candidate_id": file_id
+                    "resume_id": file_id
                 }
             )
             
             s3_url = f"s3://{settings.S3_BUCKET_NAME}/{s3_key}"
-            logger.info(f"Uploaded file {file_name} to {s3_url} (Candidate-{file_id})")
+            logger.info(f"Uploaded file {file_name} to {s3_url} (resume_id: {file_id})")
             
             return {
                 "file_id": file_id,
