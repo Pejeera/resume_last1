@@ -65,13 +65,18 @@ class S3Client:
         """
         Upload file to S3
         
+        Structure: resumes/Candidate-{resume_id}/resume.pdf
+        
         Returns:
             dict with keys: file_id, s3_url, s3_key
         """
         if settings.USE_MOCK:
             # Mock response
             file_id = str(uuid.uuid4())
-            s3_key = f"{settings.S3_PREFIX}{file_id}/{file_name}"
+            # Use folder structure: Candidate-{resume_id}/original_filename
+            candidate_folder = f"Candidate-{file_id}"
+            # Keep original filename
+            s3_key = f"{settings.S3_PREFIX}{candidate_folder}/{file_name}"
             s3_url = f"s3://{settings.S3_BUCKET_NAME}/{s3_key}"
             logger.info(f"MOCK: Uploaded file {file_name} to {s3_url}")
             return {
@@ -83,7 +88,10 @@ class S3Client:
         
         try:
             file_id = str(uuid.uuid4())
-            s3_key = f"{settings.S3_PREFIX}{file_id}/{file_name}"
+            # Use folder structure: Candidate-{resume_id}/original_filename
+            candidate_folder = f"Candidate-{file_id}"
+            # Keep original filename
+            s3_key = f"{settings.S3_PREFIX}{candidate_folder}/{file_name}"
             
             self.client.put_object(
                 Bucket=settings.S3_BUCKET_NAME,
@@ -92,12 +100,13 @@ class S3Client:
                 ContentType=content_type,
                 Metadata={
                     "uploaded_at": datetime.utcnow().isoformat(),
-                    "original_filename": file_name
+                    "original_filename": file_name,
+                    "candidate_id": file_id
                 }
             )
             
             s3_url = f"s3://{settings.S3_BUCKET_NAME}/{s3_key}"
-            logger.info(f"Uploaded file {file_name} to {s3_url}")
+            logger.info(f"Uploaded file {file_name} to {s3_url} (Candidate-{file_id})")
             
             return {
                 "file_id": file_id,

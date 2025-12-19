@@ -145,15 +145,16 @@ class ResumeRepository:
                 import boto3
                 s3_client_boto = boto3.client('s3', region_name=settings.AWS_REGION)
             
-            # List objects with prefix
-            prefix = f"{settings.S3_PREFIX}{resume_id}/"
+            # List objects with prefix (new structure: Candidate-{resume_id}/)
+            candidate_folder = f"Candidate-{resume_id}"
+            prefix = f"{settings.S3_PREFIX}{candidate_folder}/"
             response = s3_client_boto.list_objects_v2(
                 Bucket=settings.S3_BUCKET_NAME,
                 Prefix=prefix
             )
             
             if 'Contents' not in response or len(response['Contents']) == 0:
-                logger.error(f"Resume {resume_id} not found in S3")
+                logger.error(f"Resume {resume_id} not found in S3 (Candidate-{resume_id})")
                 return None
             
             # Get the first file
