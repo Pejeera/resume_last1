@@ -435,8 +435,10 @@
             select.innerHTML = '<option value="">-- เลือกตำแหน่งงาน --</option>';
             availableJobs.forEach(job => {
                 const option = document.createElement('option');
-                option.value = job.job_id;
-                const jobIdShort = job.job_id ? job.job_id.substring(0, 8) : 'N/A';
+                // Support both job.id and job.job_id for backward compatibility
+                const jobId = job.id || job.job_id;
+                option.value = jobId;
+                const jobIdShort = jobId ? jobId.substring(0, 8) : 'N/A';
                 option.textContent = `${job.title || 'N/A'} (${jobIdShort}...)`;
                 option.title = job.description || '';
                 select.appendChild(option);
@@ -522,9 +524,13 @@
                 selectA.innerHTML = '<option value="">-- เลือก Resume --</option>';
                 availableResumes.forEach(resume => {
                     const option = document.createElement('option');
-                    option.value = resume.resume_id;
-                    option.textContent = `${resume.name || 'N/A'} (ID: ${resume.resume_id.substring(0, 8)}...)`;
-                    option.title = resume.s3_url || '';
+                    // Use key as identifier, filename as display name
+                    const resumeKey = resume.key || resume.resume_id || resume.filename;
+                    const resumeName = resume.filename || resume.name || resumeKey;
+                    option.value = resumeKey;
+                    const keyShort = resumeKey ? resumeKey.substring(Math.max(0, resumeKey.length - 20)) : 'N/A';
+                    option.textContent = `${resumeName} (${keyShort})`;
+                    option.title = resume.key || resume.s3_url || '';
                     selectA.appendChild(option);
                 });
             }
@@ -533,9 +539,13 @@
                 selectB.innerHTML = '';
                 availableResumes.forEach(resume => {
                     const option = document.createElement('option');
-                    option.value = resume.resume_id;
-                    option.textContent = `${resume.name || 'N/A'} (ID: ${resume.resume_id.substring(0, 8)}...)`;
-                    option.title = resume.s3_url || '';
+                    // Use key as identifier, filename as display name
+                    const resumeKey = resume.key || resume.resume_id || resume.filename;
+                    const resumeName = resume.filename || resume.name || resumeKey;
+                    option.value = resumeKey;
+                    const keyShort = resumeKey ? resumeKey.substring(Math.max(0, resumeKey.length - 20)) : 'N/A';
+                    option.textContent = `${resumeName} (${keyShort})`;
+                    option.title = resume.key || resume.s3_url || '';
                     selectB.appendChild(option);
                 });
             }
@@ -659,12 +669,16 @@
 
             try {
                 // Search jobs (will fetch resume from S3 and process if needed)
+                // Use resume_key (S3 key) instead of resume_id
                 const searchResponse = await fetch(`${API_BASE_URL}/jobs/search_by_resume`, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json'
                     },
-                    body: JSON.stringify({ resume_id: selectedResumeId })
+                    body: JSON.stringify({ 
+                        resume_key: selectedResumeId,
+                        resume_id: selectedResumeId  // Backward compatibility
+                    })
                 });
 
                 if (!searchResponse.ok) {
@@ -715,14 +729,17 @@
             }
 
             try {
-                // Search resumes by job using selected resume IDs from S3
+                // Search resumes by job using selected resume keys (S3 keys) from S3
                 // Note: This will process resumes from S3 if needed
                 const searchResponse = await fetch(`${API_BASE_URL}/resumes/search_by_job?job_id=${encodeURIComponent(selectedJobId)}`, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json'
                     },
-                    body: JSON.stringify({ resume_ids: selectedResumeIds })
+                    body: JSON.stringify({ 
+                        resume_keys: selectedResumeIds,
+                        resume_ids: selectedResumeIds  // Backward compatibility
+                    })
                 });
 
                 if (!searchResponse.ok) {

@@ -55,44 +55,59 @@ def lambda_handler(event, context):
             return response(200, {"status": "ok"})
 
         # ---- list jobs from OpenSearch ----
-        if path == "/api/jobs" and method == "GET":
-            url = f"https://{OPENSEARCH_HOST}/{INDEX_NAME}/_search"
-            query = {
-                "size": 1000,
-                "query": {"match_all": {}}
-            }
+        if (path == "/api/jobs" or path == "/api/jobs/list") and method == "GET":
+            try:
+                url = f"https://{OPENSEARCH_HOST}/{INDEX_NAME}/_search"
+                query = {
+                    "size": 1000,
+                    "query": {"match_all": {}}
+                }
 
-            res = requests.get(
-                url,
-                auth=awsauth,
-                headers={"Content-Type": "application/json"},
-                data=json.dumps(query)
-            )
+                res = requests.get(
+                    url,
+                    auth=awsauth,
+                    headers={"Content-Type": "application/json"},
+                    json=query,
+                    timeout=10
+                )
 
-            if res.status_code != 200:
-                return response(500, {"error": res.text})
+                if res.status_code != 200:
+                    print(f"OpenSearch error: {res.status_code} - {res.text}")
+                    return response(500, {"error": f"OpenSearch error: {res.text}", "jobs": []})
 
-            hits = res.json()["hits"]["hits"]
-            jobs = [h["_source"] for h in hits]
+                hits = res.json().get("hits", {}).get("hits", [])
+                jobs = [h.get("_source", {}) for h in hits]
 
-            return response(200, jobs)
+                return response(200, {"jobs": jobs})
+            except Exception as e:
+                print(f"Error fetching jobs: {str(e)}")
+                return response(500, {"error": str(e), "jobs": []})
 
         # ---- list resumes from S3 ----
-        if path == "/api/resumes" and method == "GET":
-            resp = s3.list_objects_v2(
-                Bucket=RESUME_BUCKET,
-                Prefix=RESUME_PREFIX
-            )
+        if (path == "/api/resumes" or path == "/api/resumes/list") and method == "GET":
+            try:
+                resp = s3.list_objects_v2(
+                    Bucket=RESUME_BUCKET,
+                    Prefix=RESUME_PREFIX
+                )
 
-            files = []
-            for obj in resp.get("Contents", []):
-                files.append({
-                    "key": obj["Key"],
-                    "size": obj["Size"],
-                    "last_modified": obj["LastModified"].isoformat()
-                })
+                files = []
+                for obj in resp.get("Contents", []):
+                    # Extract filename from key
+                    key = obj["Key"]
+                    filename = key.replace(RESUME_PREFIX, "") if key.startswith(RESUME_PREFIX) else key
+                    
+                    files.append({
+                        "key": key,
+                        "filename": filename,
+                        "size": obj["Size"],
+                        "last_modified": obj["LastModified"].isoformat()
+                    })
 
-            return response(200, files)
+                return response(200, {"resumes": files})
+            except Exception as e:
+                print(f"Error fetching resumes: {str(e)}")
+                return response(500, {"error": str(e), "resumes": []})
 
         return response(404, {"error": "Not found"})
 
