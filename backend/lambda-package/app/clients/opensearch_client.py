@@ -45,34 +45,46 @@ class OpenSearchClient:
             else:
                 port = 443 if endpoint.startswith('https://') else 80
             
-            # Use IAM authentication (AWS SigV4) instead of username/password
-            # This is required when Master user type is IAM
             # Extract region from endpoint or use configured region
             # OpenSearch endpoint format: search-xxx.REGION.es.amazonaws.com
             if '.es.amazonaws.com' in host or '.aoss.amazonaws.com' in host:
                 # Extract region from hostname
                 parts = host.split('.')
                 if len(parts) >= 2:
-                    # Find region in hostname (e.g., ap-southeast-2)
+                    # Find region in hostname (e.g., ap-southeast-2, us-east-1)
+                    opensearch_region = settings.AWS_REGION  # Default
                     for part in parts:
-                        if part.startswith('ap-') or part.startswith('us-') or part.startswith('eu-'):
+                        if part.startswith('ap-') or part.startswith('us-') or part.startswith('eu-') or part.startswith('sa-') or part.startswith('ca-') or part.startswith('cn-'):
                             opensearch_region = part
                             break
-                    else:
-                        opensearch_region = settings.AWS_REGION
                 else:
                     opensearch_region = settings.AWS_REGION
             else:
                 opensearch_region = settings.AWS_REGION
             
-            credentials = boto3.Session().get_credentials()
-            awsauth = AWS4Auth(
-                credentials.access_key,
-                credentials.secret_key,
-                opensearch_region,
-                'es',
-                session_token=credentials.token
-            )
+            # Use credentials from settings (loaded from .env) instead of default boto3 session
+            # This ensures we use the credentials specified in .env file
+            if settings.AWS_ACCESS_KEY_ID and settings.AWS_SECRET_ACCESS_KEY:
+                # Use credentials from settings (.env)
+                awsauth = AWS4Auth(
+                    settings.AWS_ACCESS_KEY_ID,
+                    settings.AWS_SECRET_ACCESS_KEY,
+                    opensearch_region,
+                    'es'
+                )
+            else:
+                # Fallback to default boto3 session (for Lambda/EC2 with IAM roles)
+                credentials = boto3.Session().get_credentials()
+                if credentials:
+                    awsauth = AWS4Auth(
+                        credentials.access_key,
+                        credentials.secret_key,
+                        opensearch_region,
+                        'es',
+                        session_token=credentials.token
+                    )
+                else:
+                    raise ValueError("No AWS credentials found. Please set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY in .env file or configure AWS credentials.")
             
             self.client = OpenSearch(
                 hosts=[{'host': host, 'port': port}],

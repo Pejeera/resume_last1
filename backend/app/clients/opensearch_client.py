@@ -45,6 +45,23 @@ class OpenSearchClient:
             else:
                 port = 443 if endpoint.startswith('https://') else 80
             
+            # Extract region from endpoint or use configured region
+            # OpenSearch endpoint format: search-xxx.REGION.es.amazonaws.com
+            if '.es.amazonaws.com' in host or '.aoss.amazonaws.com' in host:
+                # Extract region from hostname
+                parts = host.split('.')
+                if len(parts) >= 2:
+                    # Find region in hostname (e.g., ap-southeast-2, us-east-1)
+                    opensearch_region = settings.AWS_REGION  # Default
+                    for part in parts:
+                        if part.startswith('ap-') or part.startswith('us-') or part.startswith('eu-') or part.startswith('sa-') or part.startswith('ca-') or part.startswith('cn-'):
+                            opensearch_region = part
+                            break
+                else:
+                    opensearch_region = settings.AWS_REGION
+            else:
+                opensearch_region = settings.AWS_REGION
+            
             # Use credentials from settings (loaded from .env) instead of default boto3 session
             # This ensures we use the credentials specified in .env file
             if settings.AWS_ACCESS_KEY_ID and settings.AWS_SECRET_ACCESS_KEY:

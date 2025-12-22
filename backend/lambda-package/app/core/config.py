@@ -13,7 +13,11 @@ from dotenv import load_dotenv
 from botocore.exceptions import ClientError
 
 # Determine .env file path and load it BEFORE Settings class is used
+# Try multiple possible locations: backend/infra/.env or project_root/infra/.env
 env_path = Path(__file__).parent.parent.parent / 'infra' / '.env'
+if not env_path.exists():
+    # Try one level up (project root)
+    env_path = Path(__file__).parent.parent.parent.parent / 'infra' / '.env'
 env_file_str = str(env_path.resolve()) if env_path.exists() else None
 
 # Load .env file into os.environ - this MUST happen before Settings() is instantiated
@@ -85,7 +89,11 @@ class Settings(BaseSettings):
         """Load values from os.environ after initialization"""
         # Override with environment variables if they exist
         # Always check os.environ and reload .env if needed
+        # Try multiple possible locations: backend/infra/.env or project_root/infra/.env
         env_path = Path(__file__).parent.parent.parent / 'infra' / '.env'
+        if not env_path.exists():
+            # Try one level up (project root)
+            env_path = Path(__file__).parent.parent.parent.parent / 'infra' / '.env'
         if env_path.exists():
             # Ensure .env is loaded
             with open(env_path, 'r', encoding='utf-8') as f:
@@ -140,11 +148,15 @@ class Settings(BaseSettings):
     def _load_secrets_from_manager(self):
         """Load secrets from AWS Secrets Manager"""
         try:
-            session = boto3.Session(
-                aws_access_key_id=self.AWS_ACCESS_KEY_ID or None,
-                aws_secret_access_key=self.AWS_SECRET_ACCESS_KEY or None,
-                region_name=self.AWS_REGION
-            )
+            # Use credentials from settings (.env) if available
+            session_kwargs = {
+                'region_name': self.AWS_REGION
+            }
+            if self.AWS_ACCESS_KEY_ID and self.AWS_SECRET_ACCESS_KEY:
+                session_kwargs['aws_access_key_id'] = self.AWS_ACCESS_KEY_ID
+                session_kwargs['aws_secret_access_key'] = self.AWS_SECRET_ACCESS_KEY
+            
+            session = boto3.Session(**session_kwargs)
             client = session.client('secretsmanager')
             response = client.get_secret_value(SecretId=self.SECRETS_MANAGER_SECRET_NAME)
             secrets = json.loads(response['SecretString'])
