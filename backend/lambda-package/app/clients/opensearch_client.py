@@ -5,6 +5,8 @@ from opensearchpy import OpenSearch, RequestsHttpConnection
 from typing import List, Dict, Any, Optional
 import json
 from datetime import datetime
+import boto3
+from requests_aws4auth import AWS4Auth
 
 from app.core.config import settings
 from app.core.logging import get_logger
@@ -43,14 +45,43 @@ class OpenSearchClient:
             else:
                 port = 443 if endpoint.startswith('https://') else 80
             
+            # Use IAM authentication (AWS SigV4) instead of username/password
+            # This is required when Master user type is IAM
+            # Extract region from endpoint or use configured region
+            # OpenSearch endpoint format: search-xxx.REGION.es.amazonaws.com
+            if '.es.amazonaws.com' in host or '.aoss.amazonaws.com' in host:
+                # Extract region from hostname
+                parts = host.split('.')
+                if len(parts) >= 2:
+                    # Find region in hostname (e.g., ap-southeast-2)
+                    for part in parts:
+                        if part.startswith('ap-') or part.startswith('us-') or part.startswith('eu-'):
+                            opensearch_region = part
+                            break
+                    else:
+                        opensearch_region = settings.AWS_REGION
+                else:
+                    opensearch_region = settings.AWS_REGION
+            else:
+                opensearch_region = settings.AWS_REGION
+            
+            credentials = boto3.Session().get_credentials()
+            awsauth = AWS4Auth(
+                credentials.access_key,
+                credentials.secret_key,
+                opensearch_region,
+                'es',
+                session_token=credentials.token
+            )
+            
             self.client = OpenSearch(
                 hosts=[{'host': host, 'port': port}],
-                http_auth=(settings.OPENSEARCH_USERNAME, settings.OPENSEARCH_PASSWORD),
+                http_auth=awsauth,
                 use_ssl=settings.OPENSEARCH_USE_SSL,
                 verify_certs=settings.OPENSEARCH_VERIFY_CERTS,
                 connection_class=RequestsHttpConnection
             )
-            logger.info(f"OpenSearchClient initialized for endpoint: {settings.OPENSEARCH_ENDPOINT}")
+            logger.info(f"OpenSearchClient initialized for endpoint: {settings.OPENSEARCH_ENDPOINT} (using IAM authentication)")
     
     def _load_jobs_from_s3(self):
         """Load jobs from S3 into mock storage"""

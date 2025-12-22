@@ -140,11 +140,15 @@ class Settings(BaseSettings):
     def _load_secrets_from_manager(self):
         """Load secrets from AWS Secrets Manager"""
         try:
-            session = boto3.Session(
-                aws_access_key_id=self.AWS_ACCESS_KEY_ID or None,
-                aws_secret_access_key=self.AWS_SECRET_ACCESS_KEY or None,
-                region_name=self.AWS_REGION
-            )
+            # Use credentials from settings (.env) if available
+            session_kwargs = {
+                'region_name': self.AWS_REGION
+            }
+            if self.AWS_ACCESS_KEY_ID and self.AWS_SECRET_ACCESS_KEY:
+                session_kwargs['aws_access_key_id'] = self.AWS_ACCESS_KEY_ID
+                session_kwargs['aws_secret_access_key'] = self.AWS_SECRET_ACCESS_KEY
+            
+            session = boto3.Session(**session_kwargs)
             client = session.client('secretsmanager')
             response = client.get_secret_value(SecretId=self.SECRETS_MANAGER_SECRET_NAME)
             secrets = json.loads(response['SecretString'])
