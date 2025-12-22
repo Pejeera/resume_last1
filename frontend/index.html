@@ -438,8 +438,8 @@
                 // Support both job.id and job.job_id for backward compatibility
                 const jobId = job.id || job.job_id;
                 option.value = jobId;
-                const jobIdShort = jobId ? jobId.substring(0, 8) : 'N/A';
-                option.textContent = `${job.title || 'N/A'} (${jobIdShort}...)`;
+                // Display only job title, no ID
+                option.textContent = job.title || 'N/A';
                 option.title = job.description || '';
                 select.appendChild(option);
             });
@@ -526,10 +526,14 @@
                     const option = document.createElement('option');
                     // Use key as identifier, filename as display name
                     const resumeKey = resume.key || resume.resume_id || resume.filename;
-                    const resumeName = resume.filename || resume.name || resumeKey;
+                    let resumeName = resume.filename || resume.name || resumeKey;
+                    // Extract just the filename (basename) if it contains path
+                    if (resumeName.includes('/')) {
+                        resumeName = resumeName.split('/').pop();
+                    }
                     option.value = resumeKey;
-                    const keyShort = resumeKey ? resumeKey.substring(Math.max(0, resumeKey.length - 20)) : 'N/A';
-                    option.textContent = `${resumeName} (${keyShort})`;
+                    // Display only filename, no path or ID
+                    option.textContent = resumeName;
                     option.title = resume.key || resume.s3_url || '';
                     selectA.appendChild(option);
                 });
@@ -541,10 +545,14 @@
                     const option = document.createElement('option');
                     // Use key as identifier, filename as display name
                     const resumeKey = resume.key || resume.resume_id || resume.filename;
-                    const resumeName = resume.filename || resume.name || resumeKey;
+                    let resumeName = resume.filename || resume.name || resumeKey;
+                    // Extract just the filename (basename) if it contains path
+                    if (resumeName.includes('/')) {
+                        resumeName = resumeName.split('/').pop();
+                    }
                     option.value = resumeKey;
-                    const keyShort = resumeKey ? resumeKey.substring(Math.max(0, resumeKey.length - 20)) : 'N/A';
-                    option.textContent = `${resumeName} (${keyShort})`;
+                    // Display only filename, no path or ID
+                    option.textContent = resumeName;
                     option.title = resume.key || resume.s3_url || '';
                     selectB.appendChild(option);
                 });

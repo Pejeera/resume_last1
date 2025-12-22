@@ -86,16 +86,26 @@ def lambda_handler(event, context):
         # ---- list resumes from S3 ----
         if (path == "/api/resumes" or path == "/api/resumes/list") and method == "GET":
             try:
+                # Only list files in Candidate folder
+                candidate_prefix = f"{RESUME_PREFIX}Candidate/"
                 resp = s3.list_objects_v2(
                     Bucket=RESUME_BUCKET,
-                    Prefix=RESUME_PREFIX
+                    Prefix=candidate_prefix
                 )
 
                 files = []
                 for obj in resp.get("Contents", []):
-                    # Extract filename from key
                     key = obj["Key"]
-                    filename = key.replace(RESUME_PREFIX, "") if key.startswith(RESUME_PREFIX) else key
+                    # Skip directories (keys ending with /)
+                    if key.endswith("/"):
+                        continue
+                    
+                    # Only include files in Candidate folder
+                    if not key.startswith(candidate_prefix):
+                        continue
+                    
+                    # Extract filename from key (remove resumes/Candidate/ prefix)
+                    filename = key.replace(candidate_prefix, "")
                     
                     files.append({
                         "key": key,
