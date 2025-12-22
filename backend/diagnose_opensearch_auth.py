@@ -9,7 +9,7 @@ import urllib3
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-API_BASE_URL = "https://k9z3rlu1ui.execute-api.us-east-1.amazonaws.com/prod"
+API_BASE_URL = "https://tm0ch5vc2e.execute-api.ap-southeast-2.amazonaws.com"
 
 def get_lambda_env_vars():
     """Get Lambda environment variables"""

@@ -1,12 +1,12 @@
 # API Endpoints สำหรับทดสอบ
 
-Base URL: `https://k9z3rlu1ui.execute-api.us-east-1.amazonaws.com/prod`
+Base URL: `https://tm0ch5vc2e.execute-api.ap-southeast-2.amazonaws.com`
 
 ## 🔍 Health Check & Root
 
 ### 1. Root Endpoint
 ```
-GET https://k9z3rlu1ui.execute-api.us-east-1.amazonaws.com/prod/
+GET https://tm0ch5vc2e.execute-api.ap-southeast-2.amazonaws.com/
 ```
 **Response:**
 ```json
@@ -18,7 +18,7 @@ GET https://k9z3rlu1ui.execute-api.us-east-1.amazonaws.com/prod/
 
 ### 2. Health Check
 ```
-GET https://k9z3rlu1ui.execute-api.us-east-1.amazonaws.com/prod/api/health
+GET https://tm0ch5vc2e.execute-api.ap-southeast-2.amazonaws.com/api/health
 ```
 **Response:**
 ```json
@@ -33,7 +33,7 @@ GET https://k9z3rlu1ui.execute-api.us-east-1.amazonaws.com/prod/api/health
 
 ### 3. List All Jobs
 ```
-GET https://k9z3rlu1ui.execute-api.us-east-1.amazonaws.com/prod/api/jobs/list
+GET https://tm0ch5vc2e.execute-api.ap-southeast-2.amazonaws.com/api/jobs/list
 ```
 **Response:**
 ```json
@@ -52,7 +52,7 @@ GET https://k9z3rlu1ui.execute-api.us-east-1.amazonaws.com/prod/api/jobs/list
 
 ### 4. Create Job
 ```
-POST https://k9z3rlu1ui.execute-api.us-east-1.amazonaws.com/prod/api/jobs/create
+POST https://tm0ch5vc2e.execute-api.ap-southeast-2.amazonaws.com/api/jobs/create
 Content-Type: application/json
 
 {
@@ -67,13 +67,13 @@ Content-Type: application/json
 
 ### 5. Sync Jobs from S3
 ```
-POST https://k9z3rlu1ui.execute-api.us-east-1.amazonaws.com/prod/api/jobs/sync_from_s3
+POST https://tm0ch5vc2e.execute-api.ap-southeast-2.amazonaws.com/api/jobs/sync_from_s3
 ```
 **Note:** ใช้ได้เฉพาะเมื่อ USE_MOCK=false
 
 ### 6. Search Jobs by Resume
 ```
-POST https://k9z3rlu1ui.execute-api.us-east-1.amazonaws.com/prod/api/jobs/search_by_resume
+POST https://tm0ch5vc2e.execute-api.ap-southeast-2.amazonaws.com/api/jobs/search_by_resume
 Content-Type: application/json
 
 {
@@ -85,19 +85,19 @@ Content-Type: application/json
 
 ### ใช้ Browser
 เปิดลิงก์เหล่านี้ใน browser:
-- Health Check: https://k9z3rlu1ui.execute-api.us-east-1.amazonaws.com/prod/api/health
-- List Jobs: https://k9z3rlu1ui.execute-api.us-east-1.amazonaws.com/prod/api/jobs/list
+- Health Check: https://tm0ch5vc2e.execute-api.ap-southeast-2.amazonaws.com/api/health
+- List Jobs: https://tm0ch5vc2e.execute-api.ap-southeast-2.amazonaws.com/api/jobs/list
 
 ### ใช้ curl (Command Line)
 ```bash
 # Health Check
-curl https://k9z3rlu1ui.execute-api.us-east-1.amazonaws.com/prod/api/health
+curl https://tm0ch5vc2e.execute-api.ap-southeast-2.amazonaws.com/api/health
 
 # List Jobs
-curl https://k9z3rlu1ui.execute-api.us-east-1.amazonaws.com/prod/api/jobs/list
+curl https://tm0ch5vc2e.execute-api.ap-southeast-2.amazonaws.com/api/jobs/list
 
 # Create Job
-curl -X POST https://k9z3rlu1ui.execute-api.us-east-1.amazonaws.com/prod/api/jobs/create \
+curl -X POST https://tm0ch5vc2e.execute-api.ap-southeast-2.amazonaws.com/api/jobs/create \
   -H "Content-Type: application/json" \
   -d '{"title":"Test Job","description":"Test description"}'
 ```
@@ -105,10 +105,10 @@ curl -X POST https://k9z3rlu1ui.execute-api.us-east-1.amazonaws.com/prod/api/job
 ### ใช้ PowerShell
 ```powershell
 # Health Check
-Invoke-RestMethod -Uri "https://k9z3rlu1ui.execute-api.us-east-1.amazonaws.com/prod/api/health"
+Invoke-RestMethod -Uri "https://tm0ch5vc2e.execute-api.ap-southeast-2.amazonaws.com/api/health"
 
 # List Jobs
-Invoke-RestMethod -Uri "https://k9z3rlu1ui.execute-api.us-east-1.amazonaws.com/prod/api/jobs/list"
+Invoke-RestMethod -Uri "https://tm0ch5vc2e.execute-api.ap-southeast-2.amazonaws.com/api/jobs/list"
 
 # Create Job
 $body = @{
@@ -116,7 +116,7 @@ $body = @{
     description = "Test description"
 } | ConvertTo-Json
 
-Invoke-RestMethod -Uri "https://k9z3rlu1ui.execute-api.us-east-1.amazonaws.com/prod/api/jobs/create" `
+Invoke-RestMethod -Uri "https://tm0ch5vc2e.execute-api.ap-southeast-2.amazonaws.com/api/jobs/create" `
   -Method POST `
   -ContentType "application/json" `
   -Body $body
@@ -127,11 +127,11 @@ Invoke-RestMethod -Uri "https://k9z3rlu1ui.execute-api.us-east-1.amazonaws.com/p
 import requests
 
 # Health Check
-response = requests.get("https://k9z3rlu1ui.execute-api.us-east-1.amazonaws.com/prod/api/health")
+response = requests.get("https://tm0ch5vc2e.execute-api.ap-southeast-2.amazonaws.com/api/health")
 print(response.json())
 
 # List Jobs
-response = requests.get("https://k9z3rlu1ui.execute-api.us-east-1.amazonaws.com/prod/api/jobs/list")
+response = requests.get("https://tm0ch5vc2e.execute-api.ap-southeast-2.amazonaws.com/api/jobs/list")
 print(response.json())
 ```
 
@@ -146,7 +146,7 @@ print(response.json())
 
 ## 🔗 Quick Links
 
-- **Health Check**: https://k9z3rlu1ui.execute-api.us-east-1.amazonaws.com/prod/api/health
-- **List Jobs**: https://k9z3rlu1ui.execute-api.us-east-1.amazonaws.com/prod/api/jobs/list
-- **Root**: https://k9z3rlu1ui.execute-api.us-east-1.amazonaws.com/prod/
+- **Health Check**: https://tm0ch5vc2e.execute-api.ap-southeast-2.amazonaws.com/api/health
+- **List Jobs**: https://tm0ch5vc2e.execute-api.ap-southeast-2.amazonaws.com/api/jobs/list
+- **Root**: https://tm0ch5vc2e.execute-api.ap-southeast-2.amazonaws.com/
 

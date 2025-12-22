@@ -13,7 +13,7 @@ if sys.platform == 'win32':
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 
 # Default API URL
-DEFAULT_API_URL = os.getenv("API_GATEWAY_URL", "https://k9z3rlu1ui.execute-api.us-east-1.amazonaws.com/prod")
+DEFAULT_API_URL = os.getenv("API_GATEWAY_URL", "https://tm0ch5vc2e.execute-api.ap-southeast-2.amazonaws.com")
 
 def check_s3_directly():
     """ตรวจสอบ S3 โดยตรง (ถ้ามี AWS credentials)"""
