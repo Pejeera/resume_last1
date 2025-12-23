@@ -213,12 +213,12 @@ def lambda_handler(event, context):
                 if resume_embedding:
                     try:
                         search_query = {
-                            "size": 10,
+                            "size": 3,
                             "query": {
                                 "knn": {
                                     "embeddings": {
                                         "vector": resume_embedding,
-                                        "k": 10
+                                        "k": 3
                                     }
                                 }
                             }
@@ -243,7 +243,7 @@ def lambda_handler(event, context):
                 # Fallback to text-based search
                 if not use_vector_search:
                     search_query = {
-                        "size": 10,
+                        "size": 3,
                         "query": {
                             "multi_match": {
                                 "query": resume_text[:500],
