@@ -15,7 +15,7 @@ RESUME_BUCKET = "resume-matching-533267343789"
 RESUME_PREFIX = "resumes/"
 
 # Bedrock config
-BEDROCK_REGION = "ap-southeast-1"
+BEDROCK_REGION = "us-east-1"
 BEDROCK_EMBEDDING_MODEL = "cohere.embed-multilingual-v3"
 BEDROCK_RERANK_MODEL = "us.amazon.nova-lite-v1:0"
 # ============================================
@@ -79,17 +79,17 @@ def lambda_handler(event, context):
             try:
                 url = f"https://{OPENSEARCH_HOST}/{INDEX_NAME}/_search"
                 query = {
-                    "size": 1000,
-                    "query": {"match_all": {}}
-                }
+                "size": 1000,
+                "query": {"match_all": {}}
+            }
 
                 res = requests.get(
-                    url,
-                    auth=awsauth,
-                    headers={"Content-Type": "application/json"},
+                url,
+                auth=awsauth,
+                headers={"Content-Type": "application/json"},
                     json=query,
                     timeout=10
-                )
+            )
 
                 if res.status_code != 200:
                     print(f"OpenSearch error: {res.status_code} - {res.text}")
@@ -265,29 +265,196 @@ def lambda_handler(event, context):
                         print(f"OpenSearch search error: {search_res.status_code} - {search_res.text}")
                         return response(500, {"error": f"OpenSearch search error: {search_res.text}"})
                 
-                # 5. Format results to match frontend expectations
+                # 5. Prepare candidates for reranking
                 hits = search_res.json().get("hits", {}).get("hits", [])
-                results = []
-                for i, hit in enumerate(hits, 1):
+                candidates = []
+                for hit in hits:
                     source = hit.get("_source", {})
                     raw_score = hit.get("_score", 0.0)
-                    # Normalize score to 0-1 range (OpenSearch scores can be > 1)
                     normalized_score = min(raw_score / 10.0, 1.0) if raw_score > 0 else 0.0
                     
-                    results.append({
-                        "rank": i,
+                    candidates.append({
                         "job_id": hit.get("_id", ""),
-                        "job_title": source.get("title", "N/A"),  # Frontend expects job_title
-                        "title": source.get("title", "N/A"),  # Keep for backward compatibility
+                        "title": source.get("title", "N/A"),
                         "description": source.get("description", ""),
                         "text_excerpt": source.get("text_excerpt", ""),
                         "metadata": source.get("metadata", {}),
-                        "match_score": normalized_score,  # Frontend expects match_score (0-1)
-                        "rerank_score": normalized_score,  # Use same score for rerank (no reranking yet)
-                        "score": raw_score,  # Keep original score for backward compatibility
-                        "reasons": f"{'Vector similarity' if use_vector_search else 'Text match'} score: {raw_score:.4f}",  # Frontend expects reasons
-                        "match_reason": f"{'Vector similarity' if use_vector_search else 'Text match'} score: {raw_score:.4f}"  # Keep for backward compatibility
+                        "vector_score": normalized_score,
+                        "raw_score": raw_score
                     })
+                
+                # 6. Rerank with Nova Lite v1
+                results = []
+                try:
+                    print(f"Attempting reranking with Nova Lite ({BEDROCK_RERANK_MODEL})...")
+                    
+                    # Build prompt for reranking
+                    resume_summary = resume_text[:500] + "..." if len(resume_text) > 500 else resume_text
+                    candidates_text = "\n".join([
+                        f"{i+1}. {c.get('title', 'N/A')} - {c.get('text_excerpt', '')[:200]}..."
+                        for i, c in enumerate(candidates)
+                    ])
+                    
+                    rerank_prompt = f"""คุณเป็น AI ที่เชี่ยวชาญในการจับคู่ Resume กับ Job
+
+**Resume Summary:**
+{resume_summary}
+
+**รายการตำแหน่งงาน (Jobs):**
+{candidates_text}
+
+**งานของคุณ:**
+1. วิเคราะห์และจัดอันดับ Top 3 ตำแหน่งงานที่เหมาะสมที่สุดกับ Resume นี้
+2. ให้เหตุผลสั้นๆ กระชับ (2-3 ประโยค) ว่าทำไมถึงเหมาะ
+3. ระบุจุดเด่น (highlighted_skills) และจุดที่ขาด (gaps) ถ้ามี
+4. แนะนำคำถามสำหรับสัมภาษณ์ (recommended_questions_for_interview)
+
+**ข้อกำหนด:**
+- ห้ามสร้างข้อมูลที่ไม่มีในรายการ
+- ถ้าข้อมูลไม่พอ ให้ระบุว่า "ข้อมูลไม่เพียงพอ"
+- ใช้ภาษาไทยในการให้เหตุผล
+- คะแนน rerank_score ควรอยู่ระหว่าง 0.0-1.0
+
+**รูปแบบผลลัพธ์ (JSON):**
+{{
+  "ranked_candidates": [
+    {{
+      "candidate_index": 0,
+      "rerank_score": 0.95,
+      "reasons": "เหตุผลสั้นๆ",
+      "highlighted_skills": ["skill1", "skill2"],
+      "gaps": ["gap1"],
+      "recommended_questions_for_interview": ["คำถาม1", "คำถาม2"]
+    }}
+  ]
+}}
+
+กรุณาให้ผลลัพธ์เป็น JSON เท่านั้น:"""
+                    
+                    # Call Nova Lite for reranking (Nova Lite format)
+                    rerank_body = json.dumps({
+                        "messages": [
+                            {
+                                "role": "user",
+                                "content": [
+                                    {
+                                        "text": rerank_prompt
+                                    }
+                                ]
+                            }
+                        ],
+                        "inferenceConfig": {
+                            "maxTokens": 2000,
+                            "temperature": 0.3,
+                            "topP": 0.9
+                        }
+                    })
+                    
+                    rerank_response = bedrock_runtime.invoke_model(
+                        modelId=BEDROCK_RERANK_MODEL,
+                        body=rerank_body,
+                        contentType="application/json",
+                        accept="application/json"
+                    )
+                    
+                    # Parse Nova Lite response format: {"output": {"message": {"content": [{"text": "..."}]}}}
+                    rerank_result = json.loads(rerank_response["body"].read())
+                    output = rerank_result.get("output", {})
+                    message = output.get("message", {})
+                    content = message.get("content", [])
+                    
+                    if content:
+                        result_text = content[0].get("text", "{}")
+                        # Extract JSON from markdown code blocks if present
+                        if "```json" in result_text:
+                            result_text = result_text.split("```json")[1].split("```")[0].strip()
+                        elif "```" in result_text:
+                            result_text = result_text.split("```")[1].split("```")[0].strip()
+                        
+                        ranked_data = json.loads(result_text)
+                        ranked_list = ranked_data.get("ranked_candidates", [])
+                        
+                        if ranked_list and len(ranked_list) > 0:
+                            # Map reranked results back to candidates
+                            for item in ranked_list:
+                                idx = item.get("candidate_index", 0)
+                                if 0 <= idx < len(candidates):
+                                    candidate = candidates[idx]
+                                    results.append({
+                                        "rank": len(results) + 1,
+                                        "job_id": candidate["job_id"],
+                                        "job_title": candidate["title"],
+                                        "title": candidate["title"],
+                                        "description": candidate["description"],
+                                        "text_excerpt": candidate["text_excerpt"],
+                                        "metadata": candidate["metadata"],
+                                        "match_score": candidate["vector_score"],
+                                        "rerank_score": float(item.get("rerank_score", 0.0)),
+                                        "score": candidate["raw_score"],
+                                        "reasons": item.get("reasons", "ไม่มีข้อมูล"),
+                                        "highlighted_skills": item.get("highlighted_skills", []),
+                                        "gaps": item.get("gaps", []),
+                                        "recommended_questions_for_interview": item.get("recommended_questions_for_interview", []),
+                                        "match_reason": f"{'Vector similarity' if use_vector_search else 'Text match'} score: {candidate['raw_score']:.4f}"
+                                    })
+                            print(f"Reranked {len(results)} candidates using Nova Lite")
+                        else:
+                            print("Warning: Nova Lite returned empty ranked list, using original results")
+                            # Fallback to original results
+                            for i, candidate in enumerate(candidates, 1):
+                                results.append({
+                                    "rank": i,
+                                    "job_id": candidate["job_id"],
+                                    "job_title": candidate["title"],
+                                    "title": candidate["title"],
+                                    "description": candidate["description"],
+                                    "text_excerpt": candidate["text_excerpt"],
+                                    "metadata": candidate["metadata"],
+                                    "match_score": candidate["vector_score"],
+                                    "rerank_score": candidate["vector_score"],
+                                    "score": candidate["raw_score"],
+                                    "reasons": f"{'Vector similarity' if use_vector_search else 'Text match'} score: {candidate['raw_score']:.4f}",
+                                    "match_reason": f"{'Vector similarity' if use_vector_search else 'Text match'} score: {candidate['raw_score']:.4f}"
+                                })
+                    else:
+                        print("Warning: Nova Lite returned no content, using original results")
+                        # Fallback to original results
+                        for i, candidate in enumerate(candidates, 1):
+                            results.append({
+                                "rank": i,
+                                "job_id": candidate["job_id"],
+                                "job_title": candidate["title"],
+                                "title": candidate["title"],
+                                "description": candidate["description"],
+                                "text_excerpt": candidate["text_excerpt"],
+                                "metadata": candidate["metadata"],
+                                "match_score": candidate["vector_score"],
+                                "rerank_score": candidate["vector_score"],
+                                "score": candidate["raw_score"],
+                                "reasons": f"{'Vector similarity' if use_vector_search else 'Text match'} score: {candidate['raw_score']:.4f}",
+                                "match_reason": f"{'Vector similarity' if use_vector_search else 'Text match'} score: {candidate['raw_score']:.4f}"
+                            })
+                except Exception as e:
+                    print(f"Warning: Reranking with Nova Lite failed: {str(e)}")
+                    import traceback
+                    print(traceback.format_exc())
+                    print("Falling back to original results without reranking")
+                    # Fallback: use original results without reranking
+                    for i, candidate in enumerate(candidates, 1):
+                        results.append({
+                            "rank": i,
+                            "job_id": candidate["job_id"],
+                            "job_title": candidate["title"],
+                            "title": candidate["title"],
+                            "description": candidate["description"],
+                            "text_excerpt": candidate["text_excerpt"],
+                            "metadata": candidate["metadata"],
+                            "match_score": candidate["vector_score"],
+                            "rerank_score": candidate["vector_score"],
+                            "score": candidate["raw_score"],
+                            "reasons": f"{'Vector similarity' if use_vector_search else 'Text match'} score: {candidate['raw_score']:.4f}",
+                            "match_reason": f"{'Vector similarity' if use_vector_search else 'Text match'} score: {candidate['raw_score']:.4f}"
+                        })
                 
                 return response(200, {
                     "resume_id": resume_key,
