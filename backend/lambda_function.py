@@ -1,6 +1,15 @@
 import json
 import boto3
 import urllib.parse
+import sys
+import os
+
+# Add python/ directory to path for dependencies
+current_dir = os.path.dirname(os.path.abspath(__file__))
+python_dir = os.path.join(current_dir, 'python')
+if os.path.exists(python_dir) and python_dir not in sys.path:
+    sys.path.insert(0, python_dir)
+
 import requests
 from requests_aws4auth import AWS4Auth
 import io
@@ -547,7 +556,7 @@ def lambda_handler(event, context):
                                 }
                                 resume_emb_res = bedrock_runtime.invoke_model(
                                     modelId=BEDROCK_EMBEDDING_MODEL,
-                                    body=json.dumps(resume_emb_body)
+                                    body=json.dumps(resume_embed_body)
                                 )
                                 resume_emb_result = json.loads(resume_emb_res["body"].read())
                                 resume_embedding = resume_emb_result.get("embeddings", [])[0]
@@ -571,17 +580,191 @@ def lambda_handler(event, context):
                     # Sort by score descending
                     results.sort(key=lambda x: x["score"], reverse=True)
                     
-                    # Add rank
-                    for i, result in enumerate(results, 1):
-                        result["rank"] = i
+                    # Prepare candidates for reranking
+                    candidates = []
+                    for result in results:
+                        candidates.append({
+                            "resume_id": result["resume_id"],
+                            "resume_name": result["resume_name"],
+                            "text_excerpt": result["text_excerpt"],
+                            "resume_text": "",  # Will be filled if needed
+                            "vector_score": result["score"],
+                            "raw_score": result["score"]
+                        })
+                    
+                    # Rerank with Nova Lite v1
+                    reranked_results = []
+                    try:
+                        print(f"Attempting reranking with Nova Lite ({BEDROCK_RERANK_MODEL})...")
+                        
+                        # Build prompt for reranking
+                        job_summary = job_description[:500] + "..." if len(job_description) > 500 else job_description
+                        candidates_text = "\n".join([
+                            f"{i+1}. {c.get('resume_name', 'N/A')} - {c.get('text_excerpt', '')[:200]}..."
+                            for i, c in enumerate(candidates)
+                        ])
+                        
+                        rerank_prompt = f"""คุณเป็น AI ที่เชี่ยวชาญในการจับคู่ Resume กับ Job
+
+**Job Description:**
+{job_summary}
+
+**รายการ Resume (Candidates):**
+{candidates_text}
+
+**งานของคุณ:**
+1. วิเคราะห์และจัดอันดับ Top 3 Resume ที่เหมาะสมที่สุดกับ Job นี้
+2. ให้เหตุผลสั้นๆ กระชับ (2-3 ประโยค) ว่าทำไมถึงเหมาะ
+3. ระบุจุดเด่น (highlighted_skills) และจุดที่ขาด (gaps) ถ้ามี
+4. แนะนำคำถามสำหรับสัมภาษณ์ (recommended_questions_for_interview)
+
+**ข้อกำหนด:**
+- ห้ามสร้างข้อมูลที่ไม่มีในรายการ
+- ถ้าข้อมูลไม่พอ ให้ระบุว่า "ข้อมูลไม่เพียงพอ"
+- ใช้ภาษาไทยในการให้เหตุผล
+- คะแนน rerank_score ควรอยู่ระหว่าง 0.0-1.0
+
+**รูปแบบผลลัพธ์ (JSON):**
+{{
+  "ranked_candidates": [
+    {{
+      "candidate_index": 0,
+      "rerank_score": 0.95,
+      "reasons": "เหตุผลสั้นๆ",
+      "highlighted_skills": ["skill1", "skill2"],
+      "gaps": ["gap1"],
+      "recommended_questions_for_interview": ["คำถาม1", "คำถาม2"]
+    }}
+  ]
+}}
+
+กรุณาให้ผลลัพธ์เป็น JSON เท่านั้น:"""
+                        
+                        # Call Nova Lite for reranking
+                        rerank_body = json.dumps({
+                            "messages": [
+                                {
+                                    "role": "user",
+                                    "content": [
+                                        {
+                                            "text": rerank_prompt
+                                        }
+                                    ]
+                                }
+                            ],
+                            "inferenceConfig": {
+                                "maxTokens": 2000,
+                                "temperature": 0.3,
+                                "topP": 0.9
+                            }
+                        })
+                        
+                        rerank_response = bedrock_runtime.invoke_model(
+                            modelId=BEDROCK_RERANK_MODEL,
+                            body=rerank_body,
+                            contentType="application/json",
+                            accept="application/json"
+                        )
+                        
+                        # Parse Nova Lite response
+                        rerank_result = json.loads(rerank_response["body"].read())
+                        output = rerank_result.get("output", {})
+                        message = output.get("message", {})
+                        content = message.get("content", [])
+                        
+                        if content:
+                            result_text = content[0].get("text", "{}")
+                            # Extract JSON from markdown code blocks if present
+                            if "```json" in result_text:
+                                result_text = result_text.split("```json")[1].split("```")[0].strip()
+                            elif "```" in result_text:
+                                result_text = result_text.split("```")[1].split("```")[0].strip()
+                            
+                            ranked_data = json.loads(result_text)
+                            ranked_list = ranked_data.get("ranked_candidates", [])
+                            
+                            if ranked_list and len(ranked_list) > 0:
+                                # Map reranked results back to candidates
+                                for item in ranked_list:
+                                    idx = item.get("candidate_index", 0)
+                                    if 0 <= idx < len(candidates):
+                                        candidate = candidates[idx]
+                                        reranked_results.append({
+                                            "rank": len(reranked_results) + 1,
+                                            "resume_id": candidate["resume_id"],
+                                            "resume_name": candidate["resume_name"],
+                                            "match_score": candidate["vector_score"],
+                                            "rerank_score": float(item.get("rerank_score", 0.0)),
+                                            "score": candidate["raw_score"],
+                                            "reasons": item.get("reasons", "ไม่มีข้อมูล"),
+                                            "highlighted_skills": item.get("highlighted_skills", []),
+                                            "gaps": item.get("gaps", []),
+                                            "recommended_questions_for_interview": item.get("recommended_questions_for_interview", []),
+                                            "text_excerpt": candidate.get("text_excerpt", "")
+                                        })
+                                print(f"Reranked {len(reranked_results)} candidates using Nova Lite")
+                            else:
+                                print("Warning: Nova Lite returned empty ranked list, using original results")
+                                # Fallback to original results
+                                for i, candidate in enumerate(candidates, 1):
+                                    reranked_results.append({
+                                        "rank": i,
+                                        "resume_id": candidate["resume_id"],
+                                        "resume_name": candidate["resume_name"],
+                                        "match_score": candidate["vector_score"],
+                                        "rerank_score": candidate["vector_score"],
+                                        "score": candidate["raw_score"],
+                                        "reasons": f"Vector similarity score: {candidate['raw_score']:.4f}",
+                                        "highlighted_skills": [],
+                                        "gaps": [],
+                                        "recommended_questions_for_interview": [],
+                                        "text_excerpt": candidate.get("text_excerpt", "")
+                                    })
+                        else:
+                            print("Warning: Nova Lite returned no content, using original results")
+                            # Fallback to original results
+                            for i, candidate in enumerate(candidates, 1):
+                                reranked_results.append({
+                                    "rank": i,
+                                    "resume_id": candidate["resume_id"],
+                                    "resume_name": candidate["resume_name"],
+                                    "match_score": candidate["vector_score"],
+                                    "rerank_score": candidate["vector_score"],
+                                    "score": candidate["raw_score"],
+                                    "reasons": f"Vector similarity score: {candidate['raw_score']:.4f}",
+                                    "highlighted_skills": [],
+                                    "gaps": [],
+                                    "recommended_questions_for_interview": [],
+                                    "text_excerpt": candidate.get("text_excerpt", "")
+                                })
+                    except Exception as e:
+                        print(f"Warning: Reranking with Nova Lite failed: {str(e)}")
+                        import traceback
+                        print(traceback.format_exc())
+                        print("Falling back to original results without reranking")
+                        # Fallback: use original results without reranking
+                        for i, candidate in enumerate(candidates, 1):
+                            reranked_results.append({
+                                "rank": i,
+                                "resume_id": candidate["resume_id"],
+                                "resume_name": candidate["resume_name"],
+                                "match_score": candidate["vector_score"],
+                                "rerank_score": candidate["vector_score"],
+                                "score": candidate["raw_score"],
+                                "reasons": f"Vector similarity score: {candidate['raw_score']:.4f}",
+                                "highlighted_skills": [],
+                                "gaps": [],
+                                "recommended_questions_for_interview": [],
+                                "text_excerpt": candidate.get("text_excerpt", "")
+                            })
                     
                     return response(200, {
                         "query": {
                             "job_id": job_id,
                             "job_description": job_description[:100] + "..." if len(job_description) > 100 else job_description
                         },
-                        "results": results,
-                        "total": len(results)
+                        "results": reranked_results,
+                        "total": len(reranked_results)
                     })
                 else:
                     return response(200, {
