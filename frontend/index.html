@@ -281,6 +281,42 @@
         .info-section li {
             margin: 3px 0;
         }
+
+        .checkbox-container {
+            display: flex;
+            align-items: center;
+            padding: 10px;
+            margin: 5px 0;
+            background: white;
+            border-radius: 6px;
+            border: 1px solid #e0e0e0;
+            transition: all 0.2s;
+        }
+
+        .checkbox-container:hover {
+            background: #f0f0f0;
+            border-color: #667eea;
+        }
+
+        .checkbox-container input[type="checkbox"] {
+            width: 20px;
+            height: 20px;
+            margin-right: 12px;
+            cursor: pointer;
+            accent-color: #667eea;
+        }
+
+        .checkbox-container label {
+            flex: 1;
+            cursor: pointer;
+            margin: 0;
+            font-weight: normal;
+            color: #333;
+        }
+
+        .checkbox-container label:hover {
+            color: #667eea;
+        }
     </style>
 </head>
 <body>
@@ -346,15 +382,17 @@
                         <small id="jobSelectStatus" style="color: #666; font-size: 0.9em; margin-top: 5px; display: block;"></small>
                     </div>
                     <div class="form-group">
-                        <label for="resumeSelectB">เลือก Resumes จาก S3 (หลายไฟล์)</label>
-                        <select id="resumeSelectB" multiple required style="min-height: 150px;">
-                            <option value="">กำลังโหลด...</option>
-                        </select>
-                        <small id="resumeSelectBStatus" style="color: #666; font-size: 0.9em; margin-top: 5px; display: block;">
-                            กด Ctrl (หรือ Cmd บน Mac) เพื่อเลือกหลายไฟล์
-                        </small>
+                        <label>เลือก Resumes เพื่อดูว่างานนี้เหมาะกับใคร (เลือกได้หลายไฟล์)</label>
+                        <div id="resumeCheckboxes" style="max-height: 300px; overflow-y: auto; border: 2px solid #ddd; border-radius: 8px; padding: 15px; background: #f9f9f9;">
+                            <div style="text-align: center; color: #666; padding: 20px;">กำลังโหลด resumes...</div>
+                        </div>
+                        <small id="resumeSelectBStatus" style="color: #666; font-size: 0.9em; margin-top: 5px; display: block;"></small>
+                        <div style="margin-top: 10px;">
+                            <button type="button" class="btn" style="background: #667eea; padding: 8px 20px; font-size: 0.9em; width: auto; margin-right: 10px;" onclick="selectAllResumes()">เลือกทั้งหมด</button>
+                            <button type="button" class="btn" style="background: #6c757d; padding: 8px 20px; font-size: 0.9em; width: auto;" onclick="deselectAllResumes()">ยกเลิกทั้งหมด</button>
+                        </div>
                     </div>
-                    <button type="submit" class="btn" id="btnModeB">🔍 Find Top 10 Resumes</button>
+                    <button type="submit" class="btn" id="btnModeB">🔍 ค้นหา Resume ที่เหมาะกับงานนี้</button>
                 </form>
             </div>
 
@@ -383,6 +421,7 @@
         let currentResults = null;
         let currentMode = 'modeA';
         let availableJobs = [];
+        let availableResumes = [];
 
         // Load jobs list on page load
         window.addEventListener('DOMContentLoaded', async () => {
@@ -447,7 +486,7 @@
         
         async function loadResumesList() {
             const selectA = document.getElementById('resumeSelectA');
-            const selectB = document.getElementById('resumeSelectB');
+            const checkboxContainer = document.getElementById('resumeCheckboxes');
             const statusA = document.getElementById('resumeSelectAStatus');
             const statusB = document.getElementById('resumeSelectBStatus');
             
@@ -468,7 +507,7 @@
                             statusA.style.color = '#28a745';
                         }
                         if (statusB) {
-                            statusB.textContent = `พบ ${availableResumes.length} resumes (กด Ctrl/Cmd เพื่อเลือกหลายไฟล์)`;
+                            statusB.textContent = `พบ ${availableResumes.length} resumes (เลือกได้หลายไฟล์)`;
                             statusB.style.color = '#28a745';
                         }
                     } else {
@@ -485,7 +524,7 @@
                     const errorData = await response.json().catch(() => ({ detail: 'Unknown error' }));
                     console.error('Failed to load resumes list:', errorData);
                     if (selectA) selectA.innerHTML = `<option value="">❌ ไม่สามารถโหลด resumes ได้</option>`;
-                    if (selectB) selectB.innerHTML = `<option value="">❌ ไม่สามารถโหลด resumes ได้</option>`;
+                    if (checkboxContainer) checkboxContainer.innerHTML = '<div style="text-align: center; color: #dc3545; padding: 20px;">❌ ไม่สามารถโหลด resumes ได้</div>';
                     if (statusA) {
                         statusA.textContent = `Error: ${errorData.detail || 'Unknown error'}`;
                         statusA.style.color = '#dc3545';
@@ -498,7 +537,7 @@
             } catch (error) {
                 console.error('Error loading resumes list:', error);
                 if (selectA) selectA.innerHTML = `<option value="">❌ เกิดข้อผิดพลาด</option>`;
-                if (selectB) selectB.innerHTML = `<option value="">❌ เกิดข้อผิดพลาด</option>`;
+                if (checkboxContainer) checkboxContainer.innerHTML = '<div style="text-align: center; color: #dc3545; padding: 20px;">❌ เกิดข้อผิดพลาด</div>';
                 if (statusA) {
                     statusA.textContent = `Network error: ${error.message}`;
                     statusA.style.color = '#dc3545';
@@ -512,11 +551,11 @@
         
         function updateResumeSelects() {
             const selectA = document.getElementById('resumeSelectA');
-            const selectB = document.getElementById('resumeSelectB');
+            const checkboxContainer = document.getElementById('resumeCheckboxes');
             
             if (availableResumes.length === 0) {
                 if (selectA) selectA.innerHTML = '<option value="">ไม่มี resumes (กรุณาอัปโหลดในหน้าอัปโหลด)</option>';
-                if (selectB) selectB.innerHTML = '<option value="">ไม่มี resumes (กรุณาอัปโหลดในหน้าอัปโหลด)</option>';
+                if (checkboxContainer) checkboxContainer.innerHTML = '<div style="text-align: center; color: #666; padding: 20px;">ไม่มี resumes (กรุณาอัปโหลดในหน้าอัปโหลด)</div>';
                 return;
             }
             
@@ -539,10 +578,9 @@
                 });
             }
             
-            if (selectB) {
-                selectB.innerHTML = '';
+            if (checkboxContainer) {
+                checkboxContainer.innerHTML = '';
                 availableResumes.forEach(resume => {
-                    const option = document.createElement('option');
                     // Use key as identifier, filename as display name
                     const resumeKey = resume.key || resume.resume_id || resume.filename;
                     let resumeName = resume.filename || resume.name || resumeKey;
@@ -550,11 +588,24 @@
                     if (resumeName.includes('/')) {
                         resumeName = resumeName.split('/').pop();
                     }
-                    option.value = resumeKey;
-                    // Display only filename, no path or ID
-                    option.textContent = resumeName;
-                    option.title = resume.key || resume.s3_url || '';
-                    selectB.appendChild(option);
+                    
+                    const checkboxDiv = document.createElement('div');
+                    checkboxDiv.className = 'checkbox-container';
+                    
+                    const checkbox = document.createElement('input');
+                    checkbox.type = 'checkbox';
+                    checkbox.id = `resume_${resumeKey.replace(/[^a-zA-Z0-9]/g, '_')}`;
+                    checkbox.value = resumeKey;
+                    checkbox.name = 'resumeCheckbox';
+                    
+                    const label = document.createElement('label');
+                    label.htmlFor = checkbox.id;
+                    label.textContent = resumeName;
+                    label.title = resume.key || resume.s3_url || '';
+                    
+                    checkboxDiv.appendChild(checkbox);
+                    checkboxDiv.appendChild(label);
+                    checkboxContainer.appendChild(checkboxDiv);
                 });
             }
         }
@@ -721,8 +772,10 @@
 
             const jobSelect = document.getElementById('jobSelect');
             const selectedJobId = jobSelect.value;
-            const resumeSelect = document.getElementById('resumeSelectB');
-            const selectedResumeIds = Array.from(resumeSelect.selectedOptions).map(opt => opt.value).filter(id => id);
+            
+            // Get selected checkboxes
+            const checkboxes = document.querySelectorAll('#resumeCheckboxes input[type="checkbox"]:checked');
+            const selectedResumeIds = Array.from(checkboxes).map(cb => cb.value).filter(id => id);
 
             if (!selectedJobId) {
                 showError('กรุณาเลือกตำแหน่งงาน');
@@ -764,6 +817,16 @@
             } finally {
                 hideLoading();
             }
+        }
+
+        function selectAllResumes() {
+            const checkboxes = document.querySelectorAll('#resumeCheckboxes input[type="checkbox"]');
+            checkboxes.forEach(cb => cb.checked = true);
+        }
+
+        function deselectAllResumes() {
+            const checkboxes = document.querySelectorAll('#resumeCheckboxes input[type="checkbox"]');
+            checkboxes.forEach(cb => cb.checked = false);
         }
 
         function displayResultsModeA(data) {
