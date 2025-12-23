@@ -57,6 +57,7 @@ def response(status, body):
 
 # ---------- Lambda ----------
 def lambda_handler(event, context):
+    print("=== Lambda Handler Started ===")
     print("EVENT:", json.dumps(event))
 
     # =====================================================
@@ -65,6 +66,9 @@ def lambda_handler(event, context):
     if "requestContext" in event:
         path = event.get("rawPath", "")
         method = event["requestContext"]["http"]["method"]
+        print(f"HTTP Request: {method} {path}")
+        print(f"Query params: {event.get('queryStringParameters', {})}")
+        print(f"Body: {event.get('body', '')[:500]}")  # First 500 chars of body
 
         # ---- CORS preflight (OPTIONS) ----
         if method == "OPTIONS":
@@ -479,6 +483,7 @@ def lambda_handler(event, context):
 
         # ---- search resumes by job (Mode B) ----
         if path == "/api/resumes/search_by_job" and method == "POST":
+            print(">>> Mode B endpoint matched! <<<")
             try:
                 # Get job_id from query string
                 query_params = event.get("queryStringParameters") or {}
@@ -490,8 +495,15 @@ def lambda_handler(event, context):
                 body = json.loads(event.get("body", "{}"))
                 resume_keys = body.get("resume_keys") or body.get("resume_ids") or []
                 
-                print(f"Searching resumes for job: {job_id}, resume_keys: {len(resume_keys)}")
+                print(f"=== Mode B: Searching resumes for job ===")
+                print(f"Job ID: {job_id}")
+                print(f"Resume keys count: {len(resume_keys)}")
                 print(f"Resume keys received: {resume_keys}")
+                print(f"Body received: {body}")
+                
+                if not resume_keys or len(resume_keys) == 0:
+                    print("WARNING: No resume keys provided!")
+                    return response(400, {"error": "resume_keys or resume_ids is required and cannot be empty"})
                 
                 # 1. Get job from OpenSearch
                 job_url = f"https://{OPENSEARCH_HOST}/{INDEX_NAME}/_doc/{job_id}"
@@ -527,8 +539,11 @@ def lambda_handler(event, context):
                 if resume_keys:
                     # Process each resume and calculate similarity
                     results = []
-                    for resume_key in resume_keys[:10]:  # Limit to 10
+                    print(f"Processing {len(resume_keys)} resumes...")
+                    print(f"Resume keys to process: {resume_keys[:10]}")
+                    for idx, resume_key in enumerate(resume_keys[:10]):  # Limit to 10
                         try:
+                            original_key = resume_key
                             # Get resume from S3
                             if not resume_key.startswith(RESUME_PREFIX):
                                 if resume_key.startswith("Candidate/"):
@@ -536,7 +551,20 @@ def lambda_handler(event, context):
                                 else:
                                     resume_key = f"{RESUME_PREFIX}Candidate/{resume_key}"
                             
-                            obj = s3.get_object(Bucket=RESUME_BUCKET, Key=resume_key)
+                            print(f"[{idx+1}/{min(len(resume_keys), 10)}] Processing: original='{original_key}', normalized='{resume_key}'")
+                            
+                            try:
+                                obj = s3.get_object(Bucket=RESUME_BUCKET, Key=resume_key)
+                            except Exception as s3_error:
+                                print(f"  - S3 ERROR: Cannot get object '{resume_key}': {str(s3_error)}")
+                                results.append({
+                                    "resume_id": resume_key,
+                                    "resume_name": resume_key.split("/")[-1] if "/" in resume_key else resume_key,
+                                    "score": 0.0,
+                                    "text_excerpt": f"S3 Error: {str(s3_error)}",
+                                    "error": f"S3 Error: {str(s3_error)}"
+                                })
+                                continue
                             file_content = obj["Body"].read()
                             file_name = resume_key.split("/")[-1]
                             
@@ -549,7 +577,20 @@ def lambda_handler(event, context):
                             elif file_name.lower().endswith('.txt'):
                                 resume_text = file_content.decode('utf-8')
                             
-                            print(f"Processing resume: {file_name}, text length: {len(resume_text)}")
+                            print(f"  - File: {file_name}, text length: {len(resume_text)}")
+                            
+                            if not resume_text or len(resume_text.strip()) < 10:
+                                print(f"  - WARNING: Resume {file_name} has no extractable text or text too short (length: {len(resume_text)})")
+                                # ยังคง append แต่มี flag ว่าไม่มี text
+                                results.append({
+                                    "resume_id": resume_key,
+                                    "resume_name": file_name,
+                                    "score": 0.0,
+                                    "text_excerpt": "ไม่สามารถอ่านข้อความจากไฟล์นี้ได้",
+                                    "error": "Could not extract text from resume"
+                                })
+                                print(f"  - Appended empty text result. Current results count: {len(results)}")
+                                continue
                             
                             if resume_text:
                                 # Generate embedding for resume
@@ -576,16 +617,26 @@ def lambda_handler(event, context):
                                     "score": float(similarity),
                                     "text_excerpt": resume_text[:200] + "..." if len(resume_text) > 200 else resume_text
                                 })
+                                print(f"  - Successfully processed resume {file_name} with score {similarity:.4f}. Current results count: {len(results)}")
                         except Exception as e:
-                            print(f"Error processing resume {resume_key}: {str(e)}")
+                            print(f"  - ERROR processing resume {resume_key}: {str(e)}")
                             import traceback
                             print(traceback.format_exc())
+                            # Append error result instead of skipping
+                            results.append({
+                                "resume_id": resume_key,
+                                "resume_name": resume_key.split("/")[-1] if "/" in resume_key else resume_key,
+                                "score": 0.0,
+                                "text_excerpt": f"Error: {str(e)}",
+                                "error": str(e)
+                            })
                             continue
                     
                     # Sort by score descending
                     results.sort(key=lambda x: x["score"], reverse=True)
                     
-                    print(f"Processed {len(results)} resumes successfully")
+                    print(f"=== Mode B: Processed {len(results)} resumes successfully ===")
+                    print(f"Results summary: {[{'name': r['resume_name'], 'score': r['score']} for r in results]}")
                     
                     if len(results) == 0:
                         return response(200, {
@@ -698,13 +749,21 @@ def lambda_handler(event, context):
                             elif "```" in result_text:
                                 result_text = result_text.split("```")[1].split("```")[0].strip()
                             
-                            ranked_data = json.loads(result_text)
+                            try:
+                                ranked_data = json.loads(result_text)
+                            except json.JSONDecodeError as e:
+                                print(f"Error parsing JSON from Nova Lite: {str(e)}")
+                                print(f"Raw response text: {result_text[:500]}")
+                                ranked_data = {}
+                            
                             ranked_list = ranked_data.get("ranked_candidates", [])
+                            print(f"Nova Lite returned {len(ranked_list)} ranked candidates")
                             
                             if ranked_list and len(ranked_list) > 0:
                                 # Map reranked results back to candidates
                                 for item in ranked_list:
                                     idx = item.get("candidate_index", 0)
+                                    print(f"Processing ranked candidate index: {idx}, total candidates: {len(candidates)}")
                                     if 0 <= idx < len(candidates):
                                         candidate = candidates[idx]
                                         reranked_results.append({
@@ -720,7 +779,15 @@ def lambda_handler(event, context):
                                             "recommended_questions_for_interview": item.get("recommended_questions_for_interview", []),
                                             "text_excerpt": candidate.get("text_excerpt", "")
                                         })
+                                    else:
+                                        print(f"WARNING: candidate_index {idx} is out of range (0-{len(candidates)-1})")
+                                
                                 print(f"Reranked {len(reranked_results)} candidates using Nova Lite")
+                                
+                                # ถ้า reranked_results ยังว่าง ให้ใช้ fallback
+                                if len(reranked_results) == 0:
+                                    print("WARNING: reranked_results is empty after mapping, using fallback")
+                                    raise Exception("Reranked results is empty after mapping")
                             else:
                                 print("Warning: Nova Lite returned empty ranked list, using original results")
                                 # Fallback to original results
@@ -775,6 +842,10 @@ def lambda_handler(event, context):
                                 "recommended_questions_for_interview": [],
                                 "text_excerpt": candidate.get("text_excerpt", "")
                             })
+                    
+                    print(f"Final reranked_results count: {len(reranked_results)}")
+                    if len(reranked_results) > 0:
+                        print(f"First result: {reranked_results[0].get('resume_name', 'N/A')}")
                     
                     return response(200, {
                         "query": {
