@@ -155,7 +155,7 @@ if ($dockerAvailable) {
         "fastapi", "mangum", "starlette", "pydantic", "pydantic_core", "pydantic_settings",
         "opensearchpy", "multipart", "PyPDF2", "docx", "pythonjsonlogger", "watchtower",
         "h11", "anyio", "sniffio", "idna", "certifi", "charset_normalizer", "urllib3",
-        "requests", "click", "colorama", "dateutil", "jmespath", "six.py", "typing_extensions.py",
+        "requests", "requests_aws4auth", "click", "colorama", "dateutil", "jmespath", "six.py", "typing_extensions.py",
         "yaml", "_yaml", "dotenv", "httptools", "lxml"
     )
     

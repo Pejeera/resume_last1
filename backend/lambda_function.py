@@ -491,6 +491,7 @@ def lambda_handler(event, context):
                 resume_keys = body.get("resume_keys") or body.get("resume_ids") or []
                 
                 print(f"Searching resumes for job: {job_id}, resume_keys: {len(resume_keys)}")
+                print(f"Resume keys received: {resume_keys}")
                 
                 # 1. Get job from OpenSearch
                 job_url = f"https://{OPENSEARCH_HOST}/{INDEX_NAME}/_doc/{job_id}"
@@ -548,6 +549,8 @@ def lambda_handler(event, context):
                             elif file_name.lower().endswith('.txt'):
                                 resume_text = file_content.decode('utf-8')
                             
+                            print(f"Processing resume: {file_name}, text length: {len(resume_text)}")
+                            
                             if resume_text:
                                 # Generate embedding for resume
                                 resume_embed_body = {
@@ -575,10 +578,25 @@ def lambda_handler(event, context):
                                 })
                         except Exception as e:
                             print(f"Error processing resume {resume_key}: {str(e)}")
+                            import traceback
+                            print(traceback.format_exc())
                             continue
                     
                     # Sort by score descending
                     results.sort(key=lambda x: x["score"], reverse=True)
+                    
+                    print(f"Processed {len(results)} resumes successfully")
+                    
+                    if len(results) == 0:
+                        return response(200, {
+                            "query": {
+                                "job_id": job_id,
+                                "job_description": job_description[:100] + "..." if len(job_description) > 100 else job_description
+                            },
+                            "results": [],
+                            "total": 0,
+                            "message": "ไม่สามารถประมวลผล Resume ได้ (อาจเป็นเพราะไฟล์ไม่ใช่ PDF/TXT หรือมีปัญหาในการอ่านไฟล์)"
+                        })
                     
                     # Prepare candidates for reranking
                     candidates = []

@@ -805,15 +805,28 @@
 
                 if (!searchResponse.ok) {
                     const error = await searchResponse.json();
-                    throw new Error(error.detail || 'Search failed');
+                    // Backend ใช้ error.error ไม่ใช่ error.detail
+                    throw new Error(error.error || error.detail || 'Search failed');
                 }
 
                 const searchResult = await searchResponse.json();
+                console.log('Mode B API Response:', searchResult); // Debug: ดู API response
+                console.log('Mode B Results:', searchResult.results); // Debug: ดู results
+                console.log('Mode B Results Length:', searchResult.results?.length); // Debug: ดูจำนวน results
+                
                 displayResultsModeB(searchResult);
                 currentResults = searchResult;
 
             } catch (error) {
-                showError(`เกิดข้อผิดพลาด: ${error.message}`);
+                // แสดง error message ที่ชัดเจนขึ้น
+                const errorMessage = error.message || 'เกิดข้อผิดพลาดในการค้นหา';
+                showError(`เกิดข้อผิดพลาด: ${errorMessage}`);
+                console.error('Mode B Error:', error); // เพิ่ม console.log เพื่อ debug
+                console.error('Mode B Error Details:', {
+                    message: error.message,
+                    stack: error.stack,
+                    response: error.response
+                });
             } finally {
                 hideLoading();
             }
@@ -887,9 +900,20 @@
         function displayResultsModeB(data) {
             const resultsDiv = document.getElementById('resultsContent');
             const results = data.results || [];
+            
+            console.log('displayResultsModeB - Full data:', data);
+            console.log('displayResultsModeB - Results:', results);
+            console.log('displayResultsModeB - Results length:', results.length);
 
             if (results.length === 0) {
-                resultsDiv.innerHTML = '<p>ไม่พบ Resume ที่เหมาะสม</p>';
+                let message = '<p>ไม่พบ Resume ที่เหมาะสม</p>';
+                if (data.message) {
+                    message += `<p style="color: #666; font-size: 0.9em;">${data.message}</p>`;
+                }
+                if (data.error) {
+                    message += `<p style="color: #dc3545; font-size: 0.9em;">Error: ${data.error}</p>`;
+                }
+                resultsDiv.innerHTML = message;
                 document.getElementById('results').classList.add('active');
                 return;
             }
