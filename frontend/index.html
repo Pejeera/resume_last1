@@ -209,12 +209,6 @@
             color: #333;
         }
 
-        .export-btn {
-            background: #28a745;
-            padding: 10px 20px;
-            font-size: 0.9em;
-        }
-
         .results-table {
             width: 100%;
             border-collapse: collapse;
@@ -406,7 +400,6 @@
             <div class="results" id="results">
                 <div class="results-header">
                     <h2>ผลลัพธ์</h2>
-                    <button class="btn export-btn" onclick="exportResults()">📥 Export JSON</button>
                 </div>
                 <div id="resultsContent"></div>
             </div>
@@ -967,21 +960,6 @@
             document.getElementById('results').classList.add('active');
         }
 
-        function exportResults() {
-            if (!currentResults) {
-                showError('ไม่มีผลลัพธ์ให้ Export');
-                return;
-            }
-
-            const dataStr = JSON.stringify(currentResults, null, 2);
-            const dataBlob = new Blob([dataStr], { type: 'application/json' });
-            const url = URL.createObjectURL(dataBlob);
-            const link = document.createElement('a');
-            link.href = url;
-            link.download = `results_${Date.now()}.json`;
-            link.click();
-            URL.revokeObjectURL(url);
-        }
     </script>
 </body>
 </html>

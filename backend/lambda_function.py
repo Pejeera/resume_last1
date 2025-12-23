@@ -226,12 +226,12 @@ def lambda_handler(event, context):
                 if resume_embedding:
                     try:
                         search_query = {
-                            "size": 3,
+                            "size": 100,  # Search all jobs first, then select Top 3
                             "query": {
                                 "knn": {
                                     "embeddings": {
                                         "vector": resume_embedding,
-                                        "k": 3
+                                        "k": 100  # Get top 100 for reranking
                                     }
                                 }
                             }
@@ -256,7 +256,7 @@ def lambda_handler(event, context):
                 # Fallback to text-based search
                 if not use_vector_search:
                     search_query = {
-                        "size": 3,
+                        "size": 100,  # Search all jobs first, then select Top 3
                         "query": {
                             "multi_match": {
                                 "query": resume_text[:500],
@@ -280,13 +280,13 @@ def lambda_handler(event, context):
                 
                 # 5. Prepare candidates for reranking
                 hits = search_res.json().get("hits", {}).get("hits", [])
-                candidates = []
+                all_candidates = []
                 for hit in hits:
                     source = hit.get("_source", {})
                     raw_score = hit.get("_score", 0.0)
                     normalized_score = min(raw_score / 10.0, 1.0) if raw_score > 0 else 0.0
                     
-                    candidates.append({
+                    all_candidates.append({
                         "job_id": hit.get("_id", ""),
                         "title": source.get("title", "N/A"),
                         "description": source.get("description", ""),
@@ -295,6 +295,11 @@ def lambda_handler(event, context):
                         "vector_score": normalized_score,
                         "raw_score": raw_score
                     })
+                
+                # Sort by embedding score and select Top 3
+                all_candidates.sort(key=lambda x: x["vector_score"], reverse=True)
+                candidates = all_candidates[:3]  # Select Top 3 based on embedding score
+                print(f"Selected Top 3 candidates from {len(all_candidates)} total jobs based on embedding score")
                 
                 # 6. Rerank with Nova Lite v1
                 results = []
@@ -357,7 +362,7 @@ def lambda_handler(event, context):
                             }
                         ],
                         "inferenceConfig": {
-                            "maxTokens": 2000,
+                            "maxTokens": 5000,
                             "temperature": 0.3,
                             "topP": 0.9
                         }
@@ -537,11 +542,11 @@ def lambda_handler(event, context):
                 # 3. If resume_keys provided, search only those resumes
                 # Otherwise, we'd need a resumes index - for now, return placeholder
                 if resume_keys:
-                    # Process each resume and calculate similarity
+                    # Process each resume and calculate similarity (process ALL resumes first)
                     results = []
-                    print(f"Processing {len(resume_keys)} resumes...")
-                    print(f"Resume keys to process: {resume_keys[:10]}")
-                    for idx, resume_key in enumerate(resume_keys[:10]):  # Limit to 10
+                    print(f"Processing {len(resume_keys)} resumes (all resumes will be processed)...")
+                    print(f"Resume keys to process: {resume_keys}")
+                    for idx, resume_key in enumerate(resume_keys):  # Process ALL resumes
                         try:
                             original_key = resume_key
                             # Get resume from S3
@@ -551,7 +556,7 @@ def lambda_handler(event, context):
                                 else:
                                     resume_key = f"{RESUME_PREFIX}Candidate/{resume_key}"
                             
-                            print(f"[{idx+1}/{min(len(resume_keys), 10)}] Processing: original='{original_key}', normalized='{resume_key}'")
+                            print(f"[{idx+1}/{len(resume_keys)}] Processing: original='{original_key}', normalized='{resume_key}'")
                             
                             try:
                                 obj = s3.get_object(Bucket=RESUME_BUCKET, Key=resume_key)
@@ -649,9 +654,13 @@ def lambda_handler(event, context):
                             "message": "ไม่สามารถประมวลผล Resume ได้ (อาจเป็นเพราะไฟล์ไม่ใช่ PDF/TXT หรือมีปัญหาในการอ่านไฟล์)"
                         })
                     
-                    # Prepare candidates for reranking
+                    # Select Top 3 based on embedding score
+                    top_results = results[:3]  # Select Top 3 based on embedding score
+                    print(f"Selected Top 3 resumes from {len(results)} total resumes based on embedding score")
+                    
+                    # Prepare candidates for reranking (only Top 3)
                     candidates = []
-                    for result in results:
+                    for result in top_results:
                         candidates.append({
                             "resume_id": result["resume_id"],
                             "resume_name": result["resume_name"],
