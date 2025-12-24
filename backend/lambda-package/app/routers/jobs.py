@@ -46,8 +46,8 @@ async def list_jobs():
         
         result = []
         
-        # Load directly from S3 (skip OpenSearch to avoid timeout)
-        logger.info("Loading jobs from S3...")
+        # Load directly from S3 directory: resumes/jobs/
+        logger.info("Loading jobs from S3 directory: resumes/jobs/")
         try:
             jobs_data = s3_client.load_jobs_data()
             if jobs_data and len(jobs_data) > 0:
@@ -60,49 +60,21 @@ async def list_jobs():
                     }
                     for job in jobs_data
                 ]
-                logger.info(f"Loaded {len(result)} jobs from S3")
+                logger.info(f"Loaded {len(result)} jobs from S3 directory: resumes/jobs/")
             else:
-                logger.warning("No jobs found in S3. jobs_data.json may not exist or is empty.")
+                logger.warning("No jobs found in S3 directory: resumes/jobs/ (directory may be empty or not exist)")
+                # Clear mock storage if in mock mode
+                if settings.USE_MOCK:
+                    from app.clients.opensearch_client import opensearch_client
+                    opensearch_client._mock_data_storage["jobs_index"] = []
+                    logger.info("Cleared mock storage jobs_index")
         except Exception as s3_error:
             logger.error(f"Error loading jobs from S3: {s3_error}")
-            # Try alternative paths in S3
-            logger.info("Trying alternative S3 paths...")
-            try:
-                # Try root level
-                from botocore.exceptions import ClientError
-                if hasattr(s3_client, 'client') and s3_client.client:
-                    try:
-                        response = s3_client.client.get_object(
-                            Bucket=settings.S3_BUCKET_NAME,
-                            Key="jobs_data.json"
-                        )
-                        content = response['Body'].read().decode('utf-8')
-                        data = json.loads(content)
-                        
-                        # รองรับทั้ง list และ dict format
-                        if isinstance(data, list):
-                            jobs_data = data
-                        elif isinstance(data, dict):
-                            jobs_data = data.get("jobs", [])
-                        else:
-                            jobs_data = []
-                        
-                        if jobs_data and len(jobs_data) > 0:
-                            result = [
-                                {
-                                    "job_id": job.get("_id", job.get("id", job.get("job_id", ""))),
-                                    "title": job.get("title", "N/A"),
-                                    "description": job.get("description", job.get("text_excerpt", ""))[:200],
-                                    "created_at": job.get("created_at", "")
-                                }
-                                for job in jobs_data
-                            ]
-                            logger.info(f"Loaded {len(result)} jobs from S3 root (jobs_data.json)")
-                    except ClientError as ce:
-                        if ce.response['Error']['Code'] != 'NoSuchKey':
-                            logger.error(f"S3 error: {ce}")
-            except Exception as alt_error:
-                logger.error(f"Alternative S3 path also failed: {alt_error}")
+            # Clear mock storage if in mock mode
+            if settings.USE_MOCK:
+                from app.clients.opensearch_client import opensearch_client
+                opensearch_client._mock_data_storage["jobs_index"] = []
+                logger.info("Cleared mock storage jobs_index due to error")
         
         logger.info(f"Listed {len(result)} jobs")
         return {

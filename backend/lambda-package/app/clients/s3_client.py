@@ -177,57 +177,106 @@ class S3Client:
             return False
     
     def load_jobs_data(self) -> List[Dict[str, Any]]:
-        """Load jobs data from S3 (for mock mode persistence)"""
-        s3_key = f"{settings.S3_PREFIX}jobs_data.json"
+        """
+        Load jobs data from S3 directory: resumes/jobs/
+        Reads all .json files, each file = 1 job object
+        Returns list of job objects
+        """
+        jobs_prefix = f"{settings.S3_PREFIX}jobs/"
         
         if settings.USE_MOCK:
-            # In mock mode, load from local file
-            local_file = "jobs_data.json"
-            if os.path.exists(local_file):
+            # In mock mode, load from local directory
+            local_dir = "jobs"
+            jobs_data = []
+            
+            if os.path.exists(local_dir) and os.path.isdir(local_dir):
                 try:
-                    with open(local_file, 'r', encoding='utf-8') as f:
-                        data = json.load(f)
+                    for filename in os.listdir(local_dir):
+                        if filename.endswith('.json'):
+                            file_path = os.path.join(local_dir, filename)
+                            try:
+                                with open(file_path, 'r', encoding='utf-8') as f:
+                                    job_data = json.load(f)
+                                    
+                                # Ensure it's a dict (single job object)
+                                if isinstance(job_data, dict):
+                                    jobs_data.append(job_data)
+                                elif isinstance(job_data, list):
+                                    # If file contains array, add all items
+                                    jobs_data.extend(job_data)
+                                    
+                            except json.JSONDecodeError as e:
+                                logger.warning(f"MOCK: Failed to parse {filename}: {e}")
+                                continue
+                            except Exception as e:
+                                logger.warning(f"MOCK: Error reading {filename}: {e}")
+                                continue
                     
-                    # รองรับทั้ง list และ dict format
-                    if isinstance(data, list):
-                        jobs_data = data
-                    elif isinstance(data, dict):
-                        jobs_data = data.get("jobs", [])
-                    else:
-                        jobs_data = []
-                    
-                    logger.info(f"MOCK: Loaded {len(jobs_data)} jobs from {local_file}")
+                    logger.info(f"MOCK: Loaded {len(jobs_data)} jobs from {local_dir}/")
                     return jobs_data
                 except Exception as e:
-                    logger.error(f"MOCK: Failed to load jobs data: {e}")
+                    logger.error(f"MOCK: Failed to load jobs from directory: {e}")
                     return []
             else:
-                logger.info(f"MOCK: Jobs data file not found: {local_file}")
+                logger.info(f"MOCK: Jobs directory not found: {local_dir}")
                 return []
         
         try:
-            response = self.client.get_object(
-                Bucket=settings.S3_BUCKET_NAME,
-                Key=s3_key
-            )
-            content = response['Body'].read().decode('utf-8')
-            data = json.loads(content)
+            # List all objects in resumes/jobs/ prefix
+            jobs_data = []
+            paginator = self.client.get_paginator('list_objects_v2')
             
-            # รองรับทั้ง list และ dict format
-            if isinstance(data, list):
-                jobs_data = data
-            elif isinstance(data, dict):
-                jobs_data = data.get("jobs", [])
-            else:
-                jobs_data = []
+            for page in paginator.paginate(Bucket=settings.S3_BUCKET_NAME, Prefix=jobs_prefix):
+                if 'Contents' not in page:
+                    continue
+                    
+                for obj in page['Contents']:
+                    s3_key = obj['Key']
+                    
+                    # Only process .json files
+                    if not s3_key.endswith('.json'):
+                        continue
+                    
+                    try:
+                        # Get and parse JSON file
+                        response = self.client.get_object(
+                            Bucket=settings.S3_BUCKET_NAME,
+                            Key=s3_key
+                        )
+                        content = response['Body'].read().decode('utf-8')
+                        job_data = json.loads(content)
+                        
+                        # Each file should contain 1 job object (dict)
+                        if isinstance(job_data, dict):
+                            jobs_data.append(job_data)
+                        elif isinstance(job_data, list):
+                            # If file contains array, add all items
+                            jobs_data.extend(job_data)
+                        else:
+                            logger.warning(f"Invalid job data format in {s3_key}: expected dict or list")
+                            
+                    except json.JSONDecodeError as e:
+                        logger.warning(f"Failed to parse JSON from {s3_key}: {e}")
+                        continue
+                    except ClientError as e:
+                        logger.warning(f"Failed to read {s3_key}: {e}")
+                        continue
+                    except Exception as e:
+                        logger.warning(f"Error processing {s3_key}: {e}")
+                        continue
             
-            logger.info(f"Loaded {len(jobs_data)} jobs from S3: {s3_key}")
+            logger.info(f"Loaded {len(jobs_data)} jobs from S3: {jobs_prefix}")
             return jobs_data
+            
         except ClientError as e:
-            if e.response['Error']['Code'] == 'NoSuchKey':
-                logger.info(f"Jobs data not found in S3: {s3_key}")
-                return []
-            logger.error(f"S3 load jobs error: {e}")
+            error_code = e.response.get('Error', {}).get('Code', '')
+            if error_code == 'NoSuchBucket' or error_code == 'AccessDenied':
+                logger.warning(f"Cannot access S3 bucket or prefix {jobs_prefix}: {e}")
+            else:
+                logger.error(f"S3 load jobs error: {e}")
+            return []
+        except Exception as e:
+            logger.error(f"Unexpected error loading jobs: {e}")
             return []
 
 

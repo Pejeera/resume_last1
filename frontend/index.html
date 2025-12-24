@@ -427,7 +427,9 @@
             
             try {
                 statusEl.textContent = 'กำลังโหลด jobs...';
-                const response = await fetch(`${API_BASE_URL}/jobs/list`);
+                // Add cache-busting parameter to prevent browser cache
+                const cacheBuster = `?t=${Date.now()}`;
+                const response = await fetch(`${API_BASE_URL}/jobs/list${cacheBuster}`);
                 
                 if (response.ok) {
                     const data = await response.json();

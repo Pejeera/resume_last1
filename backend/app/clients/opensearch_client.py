@@ -106,8 +106,14 @@ class OpenSearchClient:
             if jobs_data:
                 OpenSearchClient._mock_data_storage["jobs_index"] = jobs_data
                 logger.info(f"Loaded {len(jobs_data)} jobs from S3 into mock storage")
+            else:
+                # Clear mock storage if no jobs found in S3
+                OpenSearchClient._mock_data_storage["jobs_index"] = []
+                logger.info("No jobs found in S3, cleared mock storage")
         except Exception as e:
             logger.error(f"Failed to load jobs from S3: {e}")
+            # Clear mock storage on error
+            OpenSearchClient._mock_data_storage["jobs_index"] = []
     
     def _save_jobs_to_s3(self):
         """Save jobs from mock storage to S3"""

@@ -130,6 +130,6 @@ Write-Host "=" * 60 -ForegroundColor Cyan
 Write-Host ""
 Write-Host "💡 ทดสอบด้วย:" -ForegroundColor Cyan
 Write-Host "   python debug_jobs_s3.py" -ForegroundColor White
-Write-Host "   หรือเรียก API: GET /api/jobs/list" -ForegroundColor White
+Write-Host '   หรือเรียก API: GET /api/jobs/list' -ForegroundColor White
 Write-Host ""
 

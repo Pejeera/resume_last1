@@ -12,11 +12,13 @@ if os.path.exists(python_dir) and python_dir not in sys.path:
 
 import requests
 from requests_aws4auth import AWS4Auth
+from requests.auth import HTTPBasicAuth
 import io
+import os
 
 # ================== CONFIG ==================
 OPENSEARCH_HOST = "search-resume-search-dev-hfdsgupxj4uwviltrlqhpc2liu.ap-southeast-2.es.amazonaws.com"
-INDEX_NAME = "jobs"
+INDEX_NAME = "jobs_index"  # Changed from "jobs" to "jobs_index" to match sync data
 REGION = "ap-southeast-2"
 SERVICE = "es"
 
@@ -26,20 +28,29 @@ RESUME_PREFIX = "resumes/"
 # Bedrock config
 BEDROCK_REGION = "us-east-1"
 BEDROCK_EMBEDDING_MODEL = "cohere.embed-multilingual-v3"
-BEDROCK_RERANK_MODEL = "us.amazon.nova-lite-v1:0"
+# Use model ID directly instead of inference profile
+BEDROCK_RERANK_MODEL = "amazon.nova-lite-v1:0"  # Changed from us.amazon.nova-lite-v1:0
+
+# OpenSearch credentials (from environment or default)
+OPENSEARCH_USERNAME = os.environ.get("OPENSEARCH_USERNAME", "Admin")
+OPENSEARCH_PASSWORD = os.environ.get("OPENSEARCH_PASSWORD", "P@ssw0rd")
 # ============================================
 
 # ---------- AWS clients ----------
 session = boto3.Session()
 credentials = session.get_credentials()
 
+# Use HTTPBasicAuth for OpenSearch (username/password)
+opensearch_auth = HTTPBasicAuth(OPENSEARCH_USERNAME, OPENSEARCH_PASSWORD)
+
+# Keep AWS4Auth for other AWS services if needed
 awsauth = AWS4Auth(
     credentials.access_key,
     credentials.secret_key,
     REGION,
     SERVICE,
     session_token=credentials.token
-)
+) if credentials else None
 
 s3 = boto3.client("s3")
 bedrock_runtime = boto3.client("bedrock-runtime", region_name=BEDROCK_REGION)
@@ -87,34 +98,239 @@ def lambda_handler(event, context):
         if path == "/api/health":
             return response(200, {"status": "ok"})
 
-        # ---- list jobs from OpenSearch ----
+        # ---- list jobs from S3 directory: resumes/jobs/ ----
         if (path == "/api/jobs" or path == "/api/jobs/list") and method == "GET":
             try:
-                url = f"https://{OPENSEARCH_HOST}/{INDEX_NAME}/_search"
-                query = {
-                "size": 1000,
-                "query": {"match_all": {}}
-            }
-
-                res = requests.get(
-                url,
-                auth=awsauth,
-                headers={"Content-Type": "application/json"},
-                    json=query,
-                    timeout=10
-            )
-
-                if res.status_code != 200:
-                    print(f"OpenSearch error: {res.status_code} - {res.text}")
-                    return response(500, {"error": f"OpenSearch error: {res.text}", "jobs": []})
-
-                hits = res.json().get("hits", {}).get("hits", [])
-                jobs = [h.get("_source", {}) for h in hits]
-
-                return response(200, {"jobs": jobs})
+                jobs_prefix = f"{RESUME_PREFIX}jobs/"
+                jobs_data = []
+                
+                # List all objects in resumes/jobs/ prefix
+                paginator = s3.get_paginator('list_objects_v2')
+                
+                for page in paginator.paginate(Bucket=RESUME_BUCKET, Prefix=jobs_prefix):
+                    if 'Contents' not in page:
+                        continue
+                    
+                    for obj in page['Contents']:
+                        s3_key = obj['Key']
+                        
+                        # Only process .json files (skip directories)
+                        if not s3_key.endswith('.json'):
+                            continue
+                        
+                        try:
+                            # Get and parse JSON file
+                            file_obj = s3.get_object(Bucket=RESUME_BUCKET, Key=s3_key)
+                            content = file_obj['Body'].read().decode('utf-8')
+                            job_data = json.loads(content)
+                            
+                            # Each file should contain 1 job object (dict)
+                            if isinstance(job_data, dict):
+                                jobs_data.append(job_data)
+                            elif isinstance(job_data, list):
+                                # If file contains array, add all items
+                                jobs_data.extend(job_data)
+                        except json.JSONDecodeError as e:
+                            print(f"Failed to parse JSON from {s3_key}: {e}")
+                            continue
+                        except Exception as e:
+                            print(f"Error processing {s3_key}: {e}")
+                            continue
+                
+                # Format jobs for frontend
+                result = [
+                    {
+                        "job_id": job.get("_id", job.get("id", job.get("job_id", ""))),
+                        "title": job.get("title", "N/A"),
+                        "description": job.get("description", job.get("text_excerpt", ""))[:200],
+                        "created_at": job.get("created_at", "")
+                    }
+                    for job in jobs_data
+                ]
+                
+                print(f"Loaded {len(result)} jobs from S3: {jobs_prefix}")
+                return response(200, {"jobs": result, "total": len(result)})
             except Exception as e:
-                print(f"Error fetching jobs: {str(e)}")
-                return response(500, {"error": str(e), "jobs": []})
+                print(f"Error fetching jobs from S3: {str(e)}")
+                return response(500, {"error": str(e), "jobs": [], "total": 0})
+
+        # ---- sync jobs from S3 to OpenSearch (with embeddings) ----
+        if path == "/api/jobs/sync_from_s3" and method == "POST":
+            try:
+                print("Starting sync jobs from S3 to OpenSearch...")
+                jobs_prefix = f"{RESUME_PREFIX}jobs/"
+                jobs_data = []
+                
+                # 1. Load all jobs from S3
+                paginator = s3.get_paginator('list_objects_v2')
+                
+                for page in paginator.paginate(Bucket=RESUME_BUCKET, Prefix=jobs_prefix):
+                    if 'Contents' not in page:
+                        continue
+                    
+                    for obj in page['Contents']:
+                        s3_key = obj['Key']
+                        
+                        if not s3_key.endswith('.json'):
+                            continue
+                        
+                        try:
+                            file_obj = s3.get_object(Bucket=RESUME_BUCKET, Key=s3_key)
+                            content = file_obj['Body'].read().decode('utf-8')
+                            job_data = json.loads(content)
+                            
+                            if isinstance(job_data, dict):
+                                jobs_data.append(job_data)
+                            elif isinstance(job_data, list):
+                                jobs_data.extend(job_data)
+                        except Exception as e:
+                            print(f"Error loading {s3_key}: {e}")
+                            continue
+                
+                if not jobs_data:
+                    return response(200, {
+                        "message": "No jobs found in S3",
+                        "synced": 0,
+                        "skipped": 0,
+                        "total": 0
+                    })
+                
+                print(f"Found {len(jobs_data)} jobs in S3, starting sync...")
+                
+                # 2. Ensure index exists
+                index_url = f"https://{OPENSEARCH_HOST}/jobs_index"
+                index_mapping = {
+                    "mappings": {
+                        "properties": {
+                            "id": {"type": "keyword"},
+                            "title": {"type": "text"},
+                            "description": {"type": "text"},
+                            "text_excerpt": {"type": "text"},
+                            "embeddings": {
+                                "type": "knn_vector",
+                                "dimension": 1024
+                            },
+                            "metadata": {"type": "object"},
+                            "created_at": {"type": "date"}
+                        }
+                    }
+                }
+                
+                # Check if index exists
+                check_res = requests.head(index_url, auth=opensearch_auth, timeout=10)
+                if check_res.status_code == 404:
+                    # Create index
+                    create_res = requests.put(
+                        index_url,
+                        auth=opensearch_auth,
+                        headers={"Content-Type": "application/json"},
+                        json=index_mapping,
+                        timeout=30
+                    )
+                    if create_res.status_code not in [200, 201]:
+                        print(f"Warning: Could not create index: {create_res.text}")
+                    else:
+                        print("Created jobs_index in OpenSearch")
+                
+                # 3. Sync each job with embedding
+                synced_count = 0
+                skipped_count = 0
+                
+                for job_data in jobs_data:
+                    try:
+                        job_id = job_data.get("_id") or job_data.get("job_id") or job_data.get("id")
+                        
+                        if not job_id:
+                            print(f"Skipping job: no ID found in {job_data}")
+                            skipped_count += 1
+                            continue
+                        
+                        # Prepare document - normalize structure
+                        document = {k: v for k, v in job_data.items() if k != "_id"}
+                        document["id"] = job_id
+                        
+                        # Build description from available fields
+                        if "description" not in document or not document.get("description"):
+                            desc_parts = []
+                            if document.get("title"):
+                                desc_parts.append(f"Title: {document.get('title')}")
+                            if document.get("skills"):
+                                desc_parts.append(f"Skills: {', '.join(document.get('skills', []))}")
+                            if document.get("responsibilities"):
+                                desc_parts.append(f"Responsibilities: {' '.join(document.get('responsibilities', []))}")
+                            if document.get("requirements"):
+                                desc_parts.append(f"Requirements: {' '.join(document.get('requirements', []))}")
+                            document["description"] = "\n".join(desc_parts)
+                        
+                        # Create text_excerpt
+                        if "text_excerpt" not in document:
+                            document["text_excerpt"] = document.get("description", "")[:500]
+                        
+                        # Create metadata object
+                        if "metadata" not in document:
+                            metadata = {}
+                            for key in ["department", "location", "employment_type", "experience_years", "skills", "responsibilities", "requirements"]:
+                                if key in document:
+                                    metadata[key] = document[key]
+                            document["metadata"] = metadata
+                        
+                        # Generate embedding if not present
+                        if "embeddings" not in document or not document.get("embeddings"):
+                            try:
+                                full_text = f"{document.get('title', '')}\n{document.get('description', '')}"
+                                embedding_body = {
+                                    "texts": [full_text[:2048]],  # Cohere limit
+                                    "input_type": "search_document"
+                                }
+                                embedding_response = bedrock_runtime.invoke_model(
+                                    modelId=BEDROCK_EMBEDDING_MODEL,
+                                    body=json.dumps(embedding_body)
+                                )
+                                embedding_result = json.loads(embedding_response["body"].read())
+                                document["embeddings"] = embedding_result.get("embeddings", [])[0]
+                                print(f"Generated embedding for job {job_id} (dimension: {len(document['embeddings'])})")
+                            except Exception as e:
+                                print(f"Warning: Failed to generate embedding for job {job_id}: {e}")
+                                import traceback
+                                traceback.print_exc()
+                                # Continue without embedding
+                        
+                        # Index to OpenSearch
+                        index_doc_url = f"https://{OPENSEARCH_HOST}/jobs_index/_doc/{job_id}"
+                        index_res = requests.put(
+                            index_doc_url,
+                            auth=opensearch_auth,
+                            headers={"Content-Type": "application/json"},
+                            json=document,
+                            timeout=10
+                        )
+                        
+                        if index_res.status_code in [200, 201]:
+                            synced_count += 1
+                            print(f"Synced job {job_id} to OpenSearch")
+                        else:
+                            print(f"Failed to index job {job_id}: {index_res.status_code} - {index_res.text}")
+                            skipped_count += 1
+                            
+                    except Exception as e:
+                        print(f"Error syncing job {job_data.get('_id', job_data.get('job_id', 'unknown'))}: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        skipped_count += 1
+                
+                print(f"Sync completed: {synced_count} synced, {skipped_count} skipped")
+                return response(200, {
+                    "message": f"Successfully synced {synced_count} jobs from S3 to OpenSearch",
+                    "synced": synced_count,
+                    "skipped": skipped_count,
+                    "total": len(jobs_data)
+                })
+                
+            except Exception as e:
+                print(f"Error syncing jobs: {str(e)}")
+                import traceback
+                traceback.print_exc()
+                return response(500, {"error": str(e), "synced": 0, "skipped": 0, "total": 0})
 
         # ---- list resumes from S3 ----
         if (path == "/api/resumes" or path == "/api/resumes/list") and method == "GET":
@@ -151,6 +367,171 @@ def lambda_handler(event, context):
             except Exception as e:
                 print(f"Error fetching resumes: {str(e)}")
                 return response(500, {"error": str(e), "resumes": []})
+
+        # ---- sync resumes from S3 to OpenSearch (with embeddings) ----
+        if path == "/api/resumes/sync_from_s3" and method == "POST":
+            try:
+                print("Starting sync resumes from S3 to OpenSearch...")
+                resumes_prefix = f"{RESUME_PREFIX}Candidate/"
+                
+                # 1. List all resume files from S3
+                resp = s3.list_objects_v2(
+                    Bucket=RESUME_BUCKET,
+                    Prefix=resumes_prefix
+                )
+                
+                resume_files = []
+                for obj in resp.get("Contents", []):
+                    key = obj["Key"]
+                    if not key.endswith("/"):
+                        resume_files.append(key)
+                
+                if not resume_files:
+                    return response(200, {
+                        "message": "No resumes found in S3",
+                        "synced": 0,
+                        "skipped": 0,
+                        "total": 0
+                    })
+                
+                print(f"Found {len(resume_files)} resume files in S3, starting sync...")
+                
+                # 2. Ensure index exists
+                index_url = f"https://{OPENSEARCH_HOST}/resumes_index"
+                index_mapping = {
+                    "mappings": {
+                        "properties": {
+                            "id": {"type": "keyword"},
+                            "filename": {"type": "text"},
+                            "full_text": {"type": "text"},
+                            "text_excerpt": {"type": "text"},
+                            "embeddings": {
+                                "type": "knn_vector",
+                                "dimension": 1024
+                            },
+                            "metadata": {"type": "object"},
+                            "created_at": {"type": "date"}
+                        }
+                    }
+                }
+                
+                check_res = requests.head(index_url, auth=opensearch_auth, timeout=10)
+                if check_res.status_code == 404:
+                    create_res = requests.put(
+                        index_url,
+                        auth=opensearch_auth,
+                        headers={"Content-Type": "application/json"},
+                        json=index_mapping,
+                        timeout=30
+                    )
+                    if create_res.status_code not in [200, 201]:
+                        print(f"Warning: Could not create index: {create_res.text}")
+                    else:
+                        print("Created resumes_index in OpenSearch")
+                
+                # 3. Process each resume
+                synced_count = 0
+                skipped_count = 0
+                
+                for resume_key in resume_files:
+                    try:
+                        # Extract resume_id from key
+                        resume_id = resume_key.split("/")[-1].replace(".pdf", "").replace(".docx", "").replace(".txt", "")
+                        if not resume_id:
+                            resume_id = resume_key.replace("/", "_").replace(".", "_")
+                        
+                        print(f"Processing resume: {resume_key} (ID: {resume_id})")
+                        
+                        # Get file from S3
+                        file_obj = s3.get_object(Bucket=RESUME_BUCKET, Key=resume_key)
+                        file_content = file_obj["Body"].read()
+                        file_name = resume_key.split("/")[-1]
+                        
+                        # Extract text
+                        resume_text = ""
+                        try:
+                            if file_name.lower().endswith('.pdf'):
+                                import PyPDF2
+                                pdf_reader = PyPDF2.PdfReader(io.BytesIO(file_content))
+                                resume_text = "\n".join([page.extract_text() for page in pdf_reader.pages])
+                            elif file_name.lower().endswith('.txt'):
+                                resume_text = file_content.decode('utf-8')
+                            else:
+                                resume_text = f"Resume file: {file_name}"
+                        except Exception as e:
+                            print(f"Warning: Could not extract text from {file_name}: {e}")
+                            resume_text = f"Resume file: {file_name}"
+                        
+                        if not resume_text or len(resume_text.strip()) < 10:
+                            print(f"Skipping {resume_id}: No text extracted")
+                            skipped_count += 1
+                            continue
+                        
+                        # Prepare document
+                        document = {
+                            "id": resume_id,
+                            "filename": file_name,
+                            "full_text": resume_text,
+                            "text_excerpt": resume_text[:500],
+                            "metadata": {
+                                "s3_key": resume_key,
+                                "file_size": len(file_content)
+                            }
+                        }
+                        
+                        # Generate embedding
+                        try:
+                            embedding_body = {
+                                "texts": [resume_text[:2048]],  # Cohere limit
+                                "input_type": "search_document"
+                            }
+                            embedding_response = bedrock_runtime.invoke_model(
+                                modelId=BEDROCK_EMBEDDING_MODEL,
+                                body=json.dumps(embedding_body)
+                            )
+                            embedding_result = json.loads(embedding_response["body"].read())
+                            document["embeddings"] = embedding_result.get("embeddings", [])[0]
+                            print(f"Generated embedding for resume {resume_id} (dimension: {len(document['embeddings'])})")
+                        except Exception as e:
+                            print(f"Warning: Failed to generate embedding for resume {resume_id}: {e}")
+                            # Continue without embedding
+                        
+                        # Index to OpenSearch
+                        index_doc_url = f"https://{OPENSEARCH_HOST}/resumes_index/_doc/{resume_id}"
+                        index_res = requests.put(
+                            index_doc_url,
+                            auth=opensearch_auth,
+                            headers={"Content-Type": "application/json"},
+                            json=document,
+                            timeout=10
+                        )
+                        
+                        if index_res.status_code in [200, 201]:
+                            synced_count += 1
+                            print(f"Synced resume {resume_id} to OpenSearch")
+                        else:
+                            print(f"Failed to index resume {resume_id}: {index_res.status_code} - {index_res.text}")
+                            skipped_count += 1
+                            
+                    except Exception as e:
+                        print(f"Error syncing resume {resume_key}: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        skipped_count += 1
+                
+                print(f"Sync completed: {synced_count} synced, {skipped_count} skipped")
+                return response(200, {
+                    "message": f"Successfully synced {synced_count} resumes from S3 to OpenSearch",
+                    "synced": synced_count,
+                    "skipped": skipped_count,
+                    "total": len(resume_files)
+                })
+                
+            except Exception as e:
+                print(f"Error syncing resumes: {str(e)}")
+                import traceback
+                traceback.print_exc()
+                return response(500, {"error": str(e), "synced": 0, "skipped": 0, "total": 0})
 
         # ---- search jobs by resume (Mode A) ----
         if path == "/api/jobs/search_by_resume" and method == "POST":
@@ -239,7 +620,7 @@ def lambda_handler(event, context):
                         
                         search_res = requests.post(
                             search_url,
-                            auth=awsauth,
+                            auth=opensearch_auth,
                             headers={"Content-Type": "application/json"},
                             json=search_query,
                             timeout=10
@@ -268,7 +649,7 @@ def lambda_handler(event, context):
                     
                     search_res = requests.post(
                         search_url,
-                        auth=awsauth,
+                        auth=opensearch_auth,
                         headers={"Content-Type": "application/json"},
                         json=search_query,
                         timeout=10
@@ -370,9 +751,7 @@ def lambda_handler(event, context):
                     
                     rerank_response = bedrock_runtime.invoke_model(
                         modelId=BEDROCK_RERANK_MODEL,
-                        body=rerank_body,
-                        contentType="application/json",
-                        accept="application/json"
+                        body=rerank_body
                     )
                     
                     # Parse Nova Lite response format: {"output": {"message": {"content": [{"text": "..."}]}}}
@@ -512,7 +891,7 @@ def lambda_handler(event, context):
                 
                 # 1. Get job from OpenSearch
                 job_url = f"https://{OPENSEARCH_HOST}/{INDEX_NAME}/_doc/{job_id}"
-                job_res = requests.get(job_url, auth=awsauth, timeout=10)
+                job_res = requests.get(job_url, auth=opensearch_auth, timeout=10)
                 
                 if job_res.status_code != 200:
                     return response(404, {"error": f"Job {job_id} not found"})
@@ -739,9 +1118,7 @@ def lambda_handler(event, context):
                         
                         rerank_response = bedrock_runtime.invoke_model(
                             modelId=BEDROCK_RERANK_MODEL,
-                            body=rerank_body,
-                            contentType="application/json",
-                            accept="application/json"
+                            body=rerank_body
                         )
                         
                         # Parse Nova Lite response
@@ -905,7 +1282,7 @@ def lambda_handler(event, context):
 
                 res = requests.put(
                     url,
-                    auth=awsauth,
+                    auth=opensearch_auth,
                     headers={"Content-Type": "application/json"},
                     data=json.dumps(job)
                 )

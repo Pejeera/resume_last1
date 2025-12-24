@@ -1,1 +1,1 @@
-{"statusCode": 200, "body": "{\"message\":\"No jobs found in S3\",\"synced\":0,\"total\":0}", "headers": {"content-length": "54", "content-type": "application/json"}, "isBase64Encoded": false}
+{"statusCode": 200, "headers": {"Content-Type": "application/json", "Access-Control-Allow-Origin": "*"}, "body": "{\"message\": \"Successfully synced 5 jobs from S3 to OpenSearch\", \"synced\": 5, \"skipped\": 0, \"total\": 5}"}
