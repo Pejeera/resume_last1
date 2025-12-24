@@ -866,7 +866,7 @@
                     <tr>
                         <td><strong>#${item.rank}</strong></td>
                         <td>${item.job_title}</td>
-                        <td><span class="score">${(item.match_score * 100).toFixed(1)}%</span></td>
+                        <td><span class="score">${item.match_score.toFixed(2)}%</span></td>
                         <td><span class="score">${(item.rerank_score * 100).toFixed(1)}%</span></td>
                         <td>
                             <div class="info-section">
@@ -936,7 +936,7 @@
                     <tr>
                         <td><strong>#${item.rank}</strong></td>
                         <td>${item.resume_name}</td>
-                        <td><span class="score">${(item.match_score * 100).toFixed(1)}%</span></td>
+                        <td><span class="score">${item.match_score.toFixed(2)}%</span></td>
                         <td><span class="score">${(item.rerank_score * 100).toFixed(1)}%</span></td>
                         <td>
                             <div class="info-section">

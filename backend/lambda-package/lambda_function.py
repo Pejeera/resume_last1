@@ -666,6 +666,8 @@ def lambda_handler(event, context):
                     source = hit.get("_source", {})
                     raw_score = hit.get("_score", 0.0)
                     normalized_score = min(raw_score / 10.0, 1.0) if raw_score > 0 else 0.0
+                    # Convert to percentage (0-100%)
+                    vector_score_percent = normalized_score * 100.0
                     
                     all_candidates.append({
                         "job_id": hit.get("_id", ""),
@@ -673,7 +675,7 @@ def lambda_handler(event, context):
                         "description": source.get("description", ""),
                         "text_excerpt": source.get("text_excerpt", ""),
                         "metadata": source.get("metadata", {}),
-                        "vector_score": normalized_score,
+                        "vector_score": vector_score_percent,
                         "raw_score": raw_score
                     })
                 
@@ -994,11 +996,13 @@ def lambda_handler(event, context):
                                 norm_job = sum(a * a for a in job_embedding) ** 0.5
                                 norm_resume = sum(a * a for a in resume_embedding) ** 0.5
                                 similarity = dot_product / (norm_job * norm_resume) if (norm_job * norm_resume) > 0 else 0
+                                # Convert to percentage (0-100%)
+                                similarity_percent = float(similarity) * 100.0
                                 
                                 results.append({
                                     "resume_id": resume_key,
                                     "resume_name": file_name,
-                                    "score": float(similarity),
+                                    "score": similarity_percent,
                                     "text_excerpt": resume_text[:200] + "..." if len(resume_text) > 200 else resume_text
                                 })
                                 print(f"  - Successfully processed resume {file_name} with score {similarity:.4f}. Current results count: {len(results)}")
