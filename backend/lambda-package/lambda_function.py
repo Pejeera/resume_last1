@@ -996,8 +996,14 @@ def lambda_handler(event, context):
                                 norm_job = sum(a * a for a in job_embedding) ** 0.5
                                 norm_resume = sum(a * a for a in resume_embedding) ** 0.5
                                 similarity = dot_product / (norm_job * norm_resume) if (norm_job * norm_resume) > 0 else 0
+                                
+                                # Normalize similarity to 0-1 range (similar to Mode A normalization)
+                                # Cosine similarity is already 0-1, but values are very small (0.0001-0.0003)
+                                # Scale: multiply by 100 to make small values more visible, then cap at 1.0
+                                # This will make 0.0001 → 0.01, 0.0003 → 0.03, etc.
+                                normalized_similarity = min(float(similarity) * 100.0, 1.0) if similarity > 0 else 0.0
                                 # Convert to percentage (0-100%)
-                                similarity_percent = float(similarity) * 100.0
+                                similarity_percent = normalized_similarity * 100.0
                                 
                                 results.append({
                                     "resume_id": resume_key,
