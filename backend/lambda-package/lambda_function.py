@@ -905,6 +905,7 @@ def lambda_handler(event, context):
                     return response(400, {"error": "Job has no description"})
                 
                 # 2. Generate embedding for job
+                job_embedding = None
                 try:
                     embedding_body = {
                         "texts": [job_description[:5000]],
@@ -916,162 +917,364 @@ def lambda_handler(event, context):
                     )
                     embedding_result = json.loads(embedding_response["body"].read())
                     job_embedding = embedding_result.get("embeddings", [])[0]
+                    print(f"Generated job embedding successfully (dimension: {len(job_embedding)})")
                 except Exception as e:
                     print(f"Error generating embedding: {str(e)}")
                     return response(500, {"error": f"Failed to generate embedding: {str(e)}"})
                 
-                # 3. If resume_keys provided, search only those resumes
-                # Otherwise, we'd need a resumes index - for now, return placeholder
-                if resume_keys:
-                    # Process each resume and calculate similarity (process ALL resumes first)
-                    results = []
-                    print(f"Processing {len(resume_keys)} resumes (all resumes will be processed)...")
-                    print(f"Resume keys to process: {resume_keys}")
-                    for idx, resume_key in enumerate(resume_keys):  # Process ALL resumes
-                        try:
-                            original_key = resume_key
-                            # Get resume from S3
-                            if not resume_key.startswith(RESUME_PREFIX):
-                                if resume_key.startswith("Candidate/"):
-                                    resume_key = f"{RESUME_PREFIX}{resume_key}"
-                                else:
-                                    resume_key = f"{RESUME_PREFIX}Candidate/{resume_key}"
+                # 3. Vector search in resumes_index (use stored embeddings)
+                search_url = f"https://{OPENSEARCH_HOST}/resumes_index/_search"
+                search_res = None
+                use_vector_search = False
+                
+                # Try vector search if embedding is available
+                if job_embedding:
+                    print(f"Job embedding available, attempting vector search...")
+                    try:
+                        # Build KNN search query
+                        # OpenSearch KNN: use 'filter' inside 'knn' for filtering, not 'query'
+                        search_query = {
+                            "size": 100,  # Get top 100 resumes
+                            "knn": {
+                                "embeddings": {
+                                    "vector": job_embedding,
+                                    "k": 100  # Get top 100 for reranking
+                                }
+                            }
+                        }
+                        
+                        # If resume_keys provided, filter to only those resumes
+                        if resume_keys:
+                            # Extract resume IDs from keys (remove path and extension)
+                            resume_ids = []
+                            resume_filenames = []
+                            for key in resume_keys:
+                                # Normalize key
+                                if not key.startswith(RESUME_PREFIX):
+                                    if key.startswith("Candidate/"):
+                                        key = f"{RESUME_PREFIX}{key}"
+                                    else:
+                                        key = f"{RESUME_PREFIX}Candidate/{key}"
+                                # Extract ID (filename without extension) - this is the _id in OpenSearch
+                                resume_id = key.split("/")[-1].replace(".pdf", "").replace(".docx", "").replace(".txt", "")
+                                resume_filename = key.split("/")[-1]
+                                if resume_id:
+                                    resume_ids.append(resume_id)
+                                if resume_filename:
+                                    resume_filenames.append(resume_filename)
                             
-                            print(f"[{idx+1}/{len(resume_keys)}] Processing: original='{original_key}', normalized='{resume_key}'")
-                            
+                            if resume_ids or resume_filenames:
+                                # Add filter to KNN query (use 'filter' inside 'knn', not 'query')
+                                filter_clauses = []
+                                if resume_ids:
+                                    # Filter by _id (document ID in OpenSearch)
+                                    filter_clauses.append({
+                                        "terms": {
+                                            "_id": resume_ids
+                                        }
+                                    })
+                                if resume_filenames:
+                                    # Also filter by filename field
+                                    filter_clauses.append({
+                                        "terms": {
+                                            "filename": resume_filenames
+                                        }
+                                    })
+                                
+                                if filter_clauses:
+                                    # Use 'filter' inside 'knn' for OpenSearch KNN filtering
+                                    if len(filter_clauses) == 1:
+                                        search_query["knn"]["embeddings"]["filter"] = filter_clauses[0]
+                                    else:
+                                        search_query["knn"]["embeddings"]["filter"] = {
+                                            "bool": {
+                                                "should": filter_clauses,
+                                                "minimum_should_match": 1
+                                            }
+                                        }
+                                print(f"Filtering to {len(resume_ids)} specified resumes: IDs={resume_ids}, Filenames={resume_filenames}")
+                        else:
+                            print("No resume_keys provided, searching all resumes in index")
+                        
+                        search_res = requests.post(
+                            search_url,
+                            auth=opensearch_auth,
+                            headers={"Content-Type": "application/json"},
+                            json=search_query,
+                            timeout=10
+                        )
+                        
+                        if search_res.status_code == 200:
+                            use_vector_search = True
+                            print("Using vector search in resumes_index")
+                        else:
                             try:
-                                obj = s3.get_object(Bucket=RESUME_BUCKET, Key=resume_key)
-                            except Exception as s3_error:
-                                print(f"  - S3 ERROR: Cannot get object '{resume_key}': {str(s3_error)}")
+                                error_detail = search_res.text if hasattr(search_res, 'text') else (search_res.content.decode('utf-8') if search_res.content else 'No error detail')
+                            except:
+                                error_detail = str(search_res.content) if search_res.content else 'No error detail'
+                            print(f"Vector search failed ({search_res.status_code}): {error_detail[:1000]}, trying fallback...")
+                            print(f"Search query was: {json.dumps(search_query, indent=2)[:1000]}")
+                    except Exception as e:
+                        print(f"Vector search error: {str(e)}, trying fallback...")
+                
+                # 4. Process results from vector search or fallback
+                results = []
+                if use_vector_search:
+                    # Use results from OpenSearch KNN search
+                    hits = search_res.json().get("hits", {}).get("hits", [])
+                    print(f"Found {len(hits)} resumes from vector search")
+                    
+                    # Check if we got enough results - if filtering and got less than requested, fallback to S3 processing
+                    if resume_keys and len(hits) < len(resume_keys):
+                        print(f"WARNING: Vector search returned only {len(hits)} resumes but {len(resume_keys)} were requested. Falling back to S3 processing for all resumes.")
+                        use_vector_search = False  # Force fallback to process all resumes
+                        results = []  # Clear results so fallback will process all resumes
+                    else:
+                        # Normalize scores based on actual score range
+                        all_scores = [hit.get("_score", 0.0) for hit in hits]
+                        max_score = max(all_scores) if all_scores else 1.0
+                        min_score = min(all_scores) if all_scores else 0.0
+                        score_range = max_score - min_score if max_score > min_score else 1.0
+                        
+                        for hit in hits:
+                            source = hit.get("_source", {})
+                            raw_score = hit.get("_score", 0.0)
+                            # Normalize to 0-1 range based on actual min/max
+                            if score_range > 0:
+                                normalized_score = (raw_score - min_score) / score_range
+                            else:
+                                normalized_score = 1.0 if raw_score > 0 else 0.0
+                            # Map to 50-100% range for better visibility
+                            normalized_score = 0.5 + (normalized_score * 0.5)
+                            # Convert to percentage (50-100%)
+                            vector_score_percent = normalized_score * 100.0
+                            
+                            resume_id = hit.get("_id", "")
+                            # Get full text from source if available for reranking
+                            resume_text = source.get("full_text", source.get("text_excerpt", ""))
+                            results.append({
+                                "resume_id": resume_id,
+                                "resume_name": source.get("filename", resume_id),
+                                "score": vector_score_percent,
+                                "text_excerpt": source.get("text_excerpt", "")[:200] + "..." if len(source.get("text_excerpt", "")) > 200 else source.get("text_excerpt", ""),
+                                "resume_text": resume_text  # Store full text for reranking
+                            })
+                        
+                        print(f"Processed {len(results)} resumes from OpenSearch vector search")
+                
+                # If vector search didn't work or didn't return enough results, use fallback
+                if not use_vector_search or (resume_keys and len(results) < len(resume_keys)):
+                    # Fallback: if vector search failed or no embedding, process resumes from S3
+                    if resume_keys:
+                        # Process each resume and calculate similarity (process ALL resumes first)
+                        print(f"Processing {len(resume_keys)} resumes from S3 (fallback mode)...")
+                        print(f"Resume keys to process: {resume_keys}")
+                        for idx, resume_key in enumerate(resume_keys):  # Process ALL resumes
+                            try:
+                                original_key = resume_key
+                                # Get resume from S3
+                                if not resume_key.startswith(RESUME_PREFIX):
+                                    if resume_key.startswith("Candidate/"):
+                                        resume_key = f"{RESUME_PREFIX}{resume_key}"
+                                    else:
+                                        resume_key = f"{RESUME_PREFIX}Candidate/{resume_key}"
+                                
+                                print(f"[{idx+1}/{len(resume_keys)}] Processing: original='{original_key}', normalized='{resume_key}'")
+                                
+                                try:
+                                    obj = s3.get_object(Bucket=RESUME_BUCKET, Key=resume_key)
+                                except Exception as s3_error:
+                                    print(f"  - S3 ERROR: Cannot get object '{resume_key}': {str(s3_error)}")
+                                    results.append({
+                                        "resume_id": resume_key,
+                                        "resume_name": resume_key.split("/")[-1] if "/" in resume_key else resume_key,
+                                        "score": 0.0,
+                                        "text_excerpt": f"S3 Error: {str(s3_error)}",
+                                        "error": f"S3 Error: {str(s3_error)}"
+                                    })
+                                    continue
+                                file_content = obj["Body"].read()
+                                file_name = resume_key.split("/")[-1]
+                                
+                                # Extract text
+                                resume_text = ""
+                                if file_name.lower().endswith('.pdf'):
+                                    import PyPDF2
+                                    pdf_reader = PyPDF2.PdfReader(io.BytesIO(file_content))
+                                    resume_text = "\n".join([page.extract_text() for page in pdf_reader.pages])
+                                elif file_name.lower().endswith('.txt'):
+                                    resume_text = file_content.decode('utf-8')
+                                
+                                print(f"  - File: {file_name}, text length: {len(resume_text)}")
+                                
+                                if not resume_text or len(resume_text.strip()) < 10:
+                                    print(f"  - WARNING: Resume {file_name} has no extractable text or text too short (length: {len(resume_text)})")
+                                    # ยังคง append แต่มี flag ว่าไม่มี text
+                                    results.append({
+                                        "resume_id": resume_key,
+                                        "resume_name": file_name,
+                                        "score": 0.0,
+                                        "text_excerpt": "ไม่สามารถอ่านข้อความจากไฟล์นี้ได้",
+                                        "error": "Could not extract text from resume"
+                                    })
+                                    print(f"  - Appended empty text result. Current results count: {len(results)}")
+                                    continue
+                                
+                                if resume_text:
+                                    # Generate embedding for resume
+                                    # Bedrock embedding model has max 2048 characters limit (by characters, not bytes)
+                                    # Truncate by characters to ensure we don't exceed limit
+                                    original_len = len(resume_text)
+                                    truncated_text = resume_text[:2048] if original_len > 2048 else resume_text
+                                    # Double-check: ensure it's not over 2048 characters
+                                    if len(truncated_text) > 2048:
+                                        truncated_text = truncated_text[:2047]
+                                    
+                                    # Verify truncation worked
+                                    final_len = len(truncated_text)
+                                    if final_len > 2048:
+                                        print(f"  - ERROR: Truncation failed! Text length: {final_len} (should be <= 2048)")
+                                        truncated_text = truncated_text[:2047]  # Force truncate one more time
+                                    
+                                    resume_embed_body = {
+                                        "texts": [truncated_text],
+                                        "input_type": "search_document"
+                                    }
+                                    print(f"  - Truncated text: {len(truncated_text)} chars (original: {original_len} chars)")
+                                    resume_emb_res = bedrock_runtime.invoke_model(
+                                        modelId=BEDROCK_EMBEDDING_MODEL,
+                                        body=json.dumps(resume_embed_body)
+                                    )
+                                    resume_emb_result = json.loads(resume_emb_res["body"].read())
+                                    resume_embedding = resume_emb_result.get("embeddings", [])[0]
+                                    
+                                    # Calculate cosine similarity (without numpy)
+                                    dot_product = sum(a * b for a, b in zip(job_embedding, resume_embedding))
+                                    norm_job = sum(a * a for a in job_embedding) ** 0.5
+                                    norm_resume = sum(a * a for a in resume_embedding) ** 0.5
+                                    similarity = dot_product / (norm_job * norm_resume) if (norm_job * norm_resume) > 0 else 0
+                                    
+                                    # Store raw similarity for later normalization
+                                    results.append({
+                                        "resume_id": resume_key,
+                                        "resume_name": file_name,
+                                        "raw_similarity": float(similarity),  # Store raw similarity
+                                        "score": float(similarity) * 100.0,  # Temporary: will be normalized later
+                                        "text_excerpt": resume_text[:200] + "..." if len(resume_text) > 200 else resume_text,
+                                        "resume_text": resume_text  # Store full text for reranking
+                                    })
+                                    print(f"  - Successfully processed resume {file_name} with raw similarity {similarity:.6f}. Current results count: {len(results)}")
+                            except Exception as e:
+                                print(f"  - ERROR processing resume {resume_key}: {str(e)}")
+                                import traceback
+                                print(traceback.format_exc())
+                                # Append error result instead of skipping
                                 results.append({
                                     "resume_id": resume_key,
                                     "resume_name": resume_key.split("/")[-1] if "/" in resume_key else resume_key,
                                     "score": 0.0,
-                                    "text_excerpt": f"S3 Error: {str(s3_error)}",
-                                    "error": f"S3 Error: {str(s3_error)}"
+                                    "text_excerpt": f"Error: {str(e)}",
+                                    "error": str(e)
                                 })
                                 continue
-                            file_content = obj["Body"].read()
-                            file_name = resume_key.split("/")[-1]
-                            
-                            # Extract text
-                            resume_text = ""
-                            if file_name.lower().endswith('.pdf'):
-                                import PyPDF2
-                                pdf_reader = PyPDF2.PdfReader(io.BytesIO(file_content))
-                                resume_text = "\n".join([page.extract_text() for page in pdf_reader.pages])
-                            elif file_name.lower().endswith('.txt'):
-                                resume_text = file_content.decode('utf-8')
-                            
-                            print(f"  - File: {file_name}, text length: {len(resume_text)}")
-                            
-                            if not resume_text or len(resume_text.strip()) < 10:
-                                print(f"  - WARNING: Resume {file_name} has no extractable text or text too short (length: {len(resume_text)})")
-                                # ยังคง append แต่มี flag ว่าไม่มี text
-                                results.append({
-                                    "resume_id": resume_key,
-                                    "resume_name": file_name,
-                                    "score": 0.0,
-                                    "text_excerpt": "ไม่สามารถอ่านข้อความจากไฟล์นี้ได้",
-                                    "error": "Could not extract text from resume"
-                                })
-                                print(f"  - Appended empty text result. Current results count: {len(results)}")
-                                continue
-                            
-                            if resume_text:
-                                # Generate embedding for resume
-                                resume_embed_body = {
-                                    "texts": [resume_text[:5000]],
-                                    "input_type": "search_document"
-                                }
-                                resume_emb_res = bedrock_runtime.invoke_model(
-                                    modelId=BEDROCK_EMBEDDING_MODEL,
-                                    body=json.dumps(resume_embed_body)
-                                )
-                                resume_emb_result = json.loads(resume_emb_res["body"].read())
-                                resume_embedding = resume_emb_result.get("embeddings", [])[0]
-                                
-                                # Calculate cosine similarity (without numpy)
-                                dot_product = sum(a * b for a, b in zip(job_embedding, resume_embedding))
-                                norm_job = sum(a * a for a in job_embedding) ** 0.5
-                                norm_resume = sum(a * a for a in resume_embedding) ** 0.5
-                                similarity = dot_product / (norm_job * norm_resume) if (norm_job * norm_resume) > 0 else 0
-                                
-                                # Normalize similarity to 0-1 range (similar to Mode A normalization)
-                                # Cosine similarity is already 0-1, but values are very small (0.0001-0.0003)
-                                # Scale: multiply by 100 to make small values more visible, then cap at 1.0
-                                # This will make 0.0001 → 0.01, 0.0003 → 0.03, etc.
-                                normalized_similarity = min(float(similarity) * 100.0, 1.0) if similarity > 0 else 0.0
-                                # Convert to percentage (0-100%)
-                                similarity_percent = normalized_similarity * 100.0
-                                
-                                results.append({
-                                    "resume_id": resume_key,
-                                    "resume_name": file_name,
-                                    "score": similarity_percent,
-                                    "text_excerpt": resume_text[:200] + "..." if len(resume_text) > 200 else resume_text
-                                })
-                                print(f"  - Successfully processed resume {file_name} with score {similarity:.4f}. Current results count: {len(results)}")
-                        except Exception as e:
-                            print(f"  - ERROR processing resume {resume_key}: {str(e)}")
-                            import traceback
-                            print(traceback.format_exc())
-                            # Append error result instead of skipping
-                            results.append({
-                                "resume_id": resume_key,
-                                "resume_name": resume_key.split("/")[-1] if "/" in resume_key else resume_key,
-                                "score": 0.0,
-                                "text_excerpt": f"Error: {str(e)}",
-                                "error": str(e)
-                            })
-                            continue
+                    else:
+                        return response(400, {"error": "resume_keys is required when vector search is not available"})
+                
+                # Normalize scores for fallback mode (if using cosine similarity)
+                if not use_vector_search and results:
+                    # Get all raw similarities
+                    raw_similarities = [r.get("raw_similarity", r.get("score", 0.0) / 100.0) for r in results]
+                    max_sim = max(raw_similarities) if raw_similarities else 1.0
+                    min_sim = min(raw_similarities) if raw_similarities else 0.0
+                    sim_range = max_sim - min_sim if max_sim > min_sim else 1.0
                     
-                    # Sort by score descending
-                    results.sort(key=lambda x: x["score"], reverse=True)
-                    
-                    print(f"=== Mode B: Processed {len(results)} resumes successfully ===")
-                    print(f"Results summary: {[{'name': r['resume_name'], 'score': r['score']} for r in results]}")
-                    
-                    if len(results) == 0:
-                        return response(200, {
-                            "query": {
-                                "job_id": job_id,
-                                "job_description": job_description[:100] + "..." if len(job_description) > 100 else job_description
-                            },
-                            "results": [],
-                            "total": 0,
-                            "message": "ไม่สามารถประมวลผล Resume ได้ (อาจเป็นเพราะไฟล์ไม่ใช่ PDF/TXT หรือมีปัญหาในการอ่านไฟล์)"
-                        })
-                    
-                    # Select Top 3 based on embedding score
-                    top_results = results[:3]  # Select Top 3 based on embedding score
+                    # Normalize each result
+                    for r in results:
+                        raw_sim = r.get("raw_similarity", r.get("score", 0.0) / 100.0)
+                        if sim_range > 0:
+                            normalized = (raw_sim - min_sim) / sim_range
+                        else:
+                            normalized = 1.0 if raw_sim > 0 else 0.0
+                        # Map to 50-100% range for better visibility
+                        normalized = 0.5 + (normalized * 0.5)
+                        r["score"] = normalized * 100.0
+                        # Remove raw_similarity from final result
+                        r.pop("raw_similarity", None)
+                
+                # Sort by score descending (for both vector search and fallback)
+                results.sort(key=lambda x: x["score"], reverse=True)
+                
+                print(f"=== Mode B: Processed {len(results)} resumes successfully ===")
+                results_summary = [{'name': r['resume_name'], 'score': round(r['score'], 2)} for r in results]
+                print(f"Results summary: {results_summary}")
+                print(f"DEBUG: User selected {len(resume_keys)} resumes, processed {len(results)} results")
+                
+                if len(results) == 0:
+                    return response(200, {
+                        "query": {
+                            "job_id": job_id,
+                            "job_description": job_description[:100] + "..." if len(job_description) > 100 else job_description
+                        },
+                        "results": [],
+                        "total": 0,
+                        "message": "ไม่สามารถประมวลผล Resume ได้ (อาจเป็นเพราะไฟล์ไม่ใช่ PDF/TXT หรือมีปัญหาในการอ่านไฟล์)"
+                    })
+                
+                # CRITICAL: If user selected specific resumes, ensure we have processed all of them
+                # If we have fewer results than selected resumes, something went wrong
+                if resume_keys and len(results) < len(resume_keys):
+                    print(f"WARNING: Only processed {len(results)} resumes but user selected {len(resume_keys)} resumes!")
+                    print(f"  Selected: {resume_keys}")
+                    print(f"  Processed: {[r['resume_name'] for r in results]}")
+                    # Continue anyway - use what we have
+                
+                # Select Top 3 based on embedding score (or all if less than 3)
+                # IMPORTANT: Always select Top 3 from all processed results for reranking
+                if len(results) >= 3:
+                    top_results = results[:3]
                     print(f"Selected Top 3 resumes from {len(results)} total resumes based on embedding score")
+                elif len(results) > 0:
+                    # If we have less than 3, use all available
+                    top_results = results
+                    print(f"Selected all {len(top_results)} resumes from {len(results)} total resumes (less than 3 available)")
+                else:
+                    top_results = []
+                    print(f"WARNING: No results to select for reranking")
+                
+                print(f"DEBUG: top_results count: {len(top_results)}, candidates will be: {len(top_results)}")
+                
+                # Prepare candidates for reranking (only Top 3)
+                # Use full resume text for reranking (not just excerpt)
+                candidates = []
+                print(f"DEBUG: Preparing {len(top_results)} candidates for reranking")
+                for idx, result in enumerate(top_results):
+                    # Get full resume text if available, otherwise use excerpt
+                    resume_full_text = result.get("resume_text", result.get("text_excerpt", ""))
+                    candidates.append({
+                        "resume_id": result["resume_id"],
+                        "resume_name": result["resume_name"],
+                        "text_excerpt": result.get("text_excerpt", ""),
+                        "resume_text": resume_full_text[:3000] if resume_full_text else "",  # Limit to 3000 chars for rerank prompt
+                        "vector_score": result["score"],
+                        "raw_score": result["score"]
+                    })
+                    print(f"DEBUG: Added candidate {idx}: {result.get('resume_name', 'N/A')} (score: {result.get('score', 0):.2f})")
+                
+                print(f"DEBUG: Total candidates prepared: {len(candidates)}")
+                
+                # Rerank with Nova Lite v1
+                reranked_results = []
+                try:
+                    print(f"Attempting reranking with Nova Lite ({BEDROCK_RERANK_MODEL})...")
                     
-                    # Prepare candidates for reranking (only Top 3)
-                    candidates = []
-                    for result in top_results:
-                        candidates.append({
-                            "resume_id": result["resume_id"],
-                            "resume_name": result["resume_name"],
-                            "text_excerpt": result["text_excerpt"],
-                            "resume_text": "",  # Will be filled if needed
-                            "vector_score": result["score"],
-                            "raw_score": result["score"]
-                        })
+                    # Build prompt for reranking with full resume text
+                    job_summary = job_description[:1000] + "..." if len(job_description) > 1000 else job_description
+                    candidates_text = "\n\n".join([
+                        f"=== Resume {i+1}: {c.get('resume_name', 'N/A')} ===\n{c.get('resume_text', c.get('text_excerpt', 'N/A'))}"
+                        for i, c in enumerate(candidates)
+                    ])
                     
-                    # Rerank with Nova Lite v1
-                    reranked_results = []
-                    try:
-                        print(f"Attempting reranking with Nova Lite ({BEDROCK_RERANK_MODEL})...")
-                        
-                        # Build prompt for reranking
-                        job_summary = job_description[:500] + "..." if len(job_description) > 500 else job_description
-                        candidates_text = "\n".join([
-                            f"{i+1}. {c.get('resume_name', 'N/A')} - {c.get('text_excerpt', '')[:200]}..."
-                            for i, c in enumerate(candidates)
-                        ])
-                        
-                        rerank_prompt = f"""คุณเป็น AI ที่เชี่ยวชาญในการจับคู่ Resume กับ Job
+                    rerank_prompt = f"""คุณเป็น AI ที่เชี่ยวชาญในการจับคู่ Resume กับ Job
 
 **Job Description:**
 {job_summary}
@@ -1080,16 +1283,18 @@ def lambda_handler(event, context):
 {candidates_text}
 
 **งานของคุณ:**
-1. วิเคราะห์และจัดอันดับ Top 3 Resume ที่เหมาะสมที่สุดกับ Job นี้
+1. วิเคราะห์และจัดอันดับ Resume ทั้งหมดที่ให้มา ({len(candidates)} resumes) ตามความเหมาะสมกับ Job นี้
 2. ให้เหตุผลสั้นๆ กระชับ (2-3 ประโยค) ว่าทำไมถึงเหมาะ
 3. ระบุจุดเด่น (highlighted_skills) และจุดที่ขาด (gaps) ถ้ามี
 4. แนะนำคำถามสำหรับสัมภาษณ์ (recommended_questions_for_interview)
+5. **สำคัญมาก:** ต้องจัดอันดับ Resume ทั้งหมดที่ให้มา ({len(candidates)} resumes) ไม่ใช่แค่บางอัน
 
 **ข้อกำหนด:**
 - ห้ามสร้างข้อมูลที่ไม่มีในรายการ
 - ถ้าข้อมูลไม่พอ ให้ระบุว่า "ข้อมูลไม่เพียงพอ"
 - ใช้ภาษาไทยในการให้เหตุผล
 - คะแนน rerank_score ควรอยู่ระหว่าง 0.0-1.0
+- **ต้องมี candidate_index ครบทุก Resume: 0, 1, 2, ... ถึง {len(candidates)-1}**
 
 **รูปแบบผลลัพธ์ (JSON):**
 {{
@@ -1101,66 +1306,112 @@ def lambda_handler(event, context):
       "highlighted_skills": ["skill1", "skill2"],
       "gaps": ["gap1"],
       "recommended_questions_for_interview": ["คำถาม1", "คำถาม2"]
+    }},
+    {{
+      "candidate_index": 1,
+      "rerank_score": 0.85,
+      "reasons": "เหตุผลสั้นๆ",
+      "highlighted_skills": ["skill1"],
+      "gaps": ["gap1"],
+      "recommended_questions_for_interview": ["คำถาม1"]
+    }},
+    {{
+      "candidate_index": 2,
+      "rerank_score": 0.75,
+      "reasons": "เหตุผลสั้นๆ",
+      "highlighted_skills": [],
+      "gaps": [],
+      "recommended_questions_for_interview": []
     }}
   ]
 }}
 
+**สำคัญมาก:** 
+- candidate_index ต้องเป็น 0, 1, 2, ... ตามลำดับ (0 ถึง {len(candidates)-1})
+- ต้องมี ranked_candidates ครบทุก Resume ที่ให้มา ({len(candidates)} candidates)
+- ห้ามขาด candidate_index ใดๆ
+
 กรุณาให้ผลลัพธ์เป็น JSON เท่านั้น:"""
-                        
-                        # Call Nova Lite for reranking
-                        rerank_body = json.dumps({
-                            "messages": [
-                                {
-                                    "role": "user",
-                                    "content": [
-                                        {
-                                            "text": rerank_prompt
-                                        }
-                                    ]
-                                }
-                            ],
-                            "inferenceConfig": {
-                                "maxTokens": 2000,
-                                "temperature": 0.3,
-                                "topP": 0.9
+                    
+                    # Call Nova Lite for reranking
+                    rerank_body = json.dumps({
+                        "messages": [
+                            {
+                                "role": "user",
+                                "content": [
+                                    {
+                                        "text": rerank_prompt
+                                    }
+                                ]
                             }
-                        })
+                        ],
+                        "inferenceConfig": {
+                            "maxTokens": 2000,
+                            "temperature": 0.3,
+                            "topP": 0.9
+                        }
+                    })
+                    
+                    rerank_response = bedrock_runtime.invoke_model(
+                        modelId=BEDROCK_RERANK_MODEL,
+                        body=rerank_body
+                    )
+                    
+                    # Parse Nova Lite response
+                    rerank_result = json.loads(rerank_response["body"].read())
+                    output = rerank_result.get("output", {})
+                    message = output.get("message", {})
+                    content = message.get("content", [])
+                    
+                    if content:
+                        result_text = content[0].get("text", "{}")
+                        # Extract JSON from markdown code blocks if present
+                        if "```json" in result_text:
+                            result_text = result_text.split("```json")[1].split("```")[0].strip()
+                        elif "```" in result_text:
+                            result_text = result_text.split("```")[1].split("```")[0].strip()
                         
-                        rerank_response = bedrock_runtime.invoke_model(
-                            modelId=BEDROCK_RERANK_MODEL,
-                            body=rerank_body
-                        )
+                        try:
+                            ranked_data = json.loads(result_text)
+                        except json.JSONDecodeError as e:
+                            print(f"Error parsing JSON from Nova Lite: {str(e)}")
+                            print(f"Raw response text: {result_text[:500]}")
+                            ranked_data = {}
                         
-                        # Parse Nova Lite response
-                        rerank_result = json.loads(rerank_response["body"].read())
-                        output = rerank_result.get("output", {})
-                        message = output.get("message", {})
-                        content = message.get("content", [])
+                        ranked_list = ranked_data.get("ranked_candidates", [])
+                        print(f"Nova Lite returned {len(ranked_list)} ranked candidates (expected {len(candidates)})")
                         
-                        if content:
-                            result_text = content[0].get("text", "{}")
-                            # Extract JSON from markdown code blocks if present
-                            if "```json" in result_text:
-                                result_text = result_text.split("```json")[1].split("```")[0].strip()
-                            elif "```" in result_text:
-                                result_text = result_text.split("```")[1].split("```")[0].strip()
-                            
-                            try:
-                                ranked_data = json.loads(result_text)
-                            except json.JSONDecodeError as e:
-                                print(f"Error parsing JSON from Nova Lite: {str(e)}")
-                                print(f"Raw response text: {result_text[:500]}")
-                                ranked_data = {}
-                            
-                            ranked_list = ranked_data.get("ranked_candidates", [])
-                            print(f"Nova Lite returned {len(ranked_list)} ranked candidates")
-                            
-                            if ranked_list and len(ranked_list) > 0:
+                        if ranked_list and len(ranked_list) > 0:
+                            # CRITICAL: Check if Nova Lite returned all candidates
+                            if len(ranked_list) < len(candidates):
+                                print(f"WARNING: Nova Lite returned only {len(ranked_list)} candidates but {len(candidates)} were expected. Using fallback to show all candidates.")
+                                # Use fallback: show all candidates with vector scores
+                                for i, candidate in enumerate(candidates, 1):
+                                    reranked_results.append({
+                                        "rank": i,
+                                        "resume_id": candidate["resume_id"],
+                                        "resume_name": candidate["resume_name"],
+                                        "match_score": candidate["vector_score"],
+                                        "rerank_score": candidate["vector_score"] / 100.0,  # Convert to 0-1 range
+                                        "score": candidate["raw_score"],
+                                        "reasons": f"Vector similarity score: {candidate['raw_score']:.4f}%",
+                                        "highlighted_skills": [],
+                                        "gaps": [],
+                                        "recommended_questions_for_interview": [],
+                                        "text_excerpt": candidate.get("text_excerpt", "")
+                                    })
+                                print(f"Using fallback: Added all {len(candidates)} candidates to results")
+                            else:
+                                # Nova Lite returned all candidates - map them properly
+                                # Sort ranked_list by rerank_score descending to get proper ranking
+                                ranked_list.sort(key=lambda x: float(x.get("rerank_score", 0.0)), reverse=True)
+                                
                                 # Map reranked results back to candidates
+                                processed_indices = set()
                                 for item in ranked_list:
                                     idx = item.get("candidate_index", 0)
                                     print(f"Processing ranked candidate index: {idx}, total candidates: {len(candidates)}")
-                                    if 0 <= idx < len(candidates):
+                                    if 0 <= idx < len(candidates) and idx not in processed_indices:
                                         candidate = candidates[idx]
                                         reranked_results.append({
                                             "rank": len(reranked_results) + 1,
@@ -1175,15 +1426,67 @@ def lambda_handler(event, context):
                                             "recommended_questions_for_interview": item.get("recommended_questions_for_interview", []),
                                             "text_excerpt": candidate.get("text_excerpt", "")
                                         })
+                                        processed_indices.add(idx)
                                     else:
-                                        print(f"WARNING: candidate_index {idx} is out of range (0-{len(candidates)-1})")
+                                        if idx in processed_indices:
+                                            print(f"WARNING: candidate_index {idx} already processed, skipping duplicate")
+                                        else:
+                                            print(f"WARNING: candidate_index {idx} is out of range (0-{len(candidates)-1})")
                                 
-                                print(f"Reranked {len(reranked_results)} candidates using Nova Lite")
+                                # CRITICAL: If Nova Lite didn't return all candidates, add missing ones
+                                if len(reranked_results) < len(candidates):
+                                    print(f"WARNING: After mapping, only {len(reranked_results)} candidates mapped but {len(candidates)} were expected. Adding missing candidates.")
+                                    for i, candidate in enumerate(candidates):
+                                        if i not in processed_indices:
+                                            reranked_results.append({
+                                                "rank": len(reranked_results) + 1,
+                                                "resume_id": candidate["resume_id"],
+                                                "resume_name": candidate["resume_name"],
+                                                "match_score": candidate["vector_score"],
+                                                "rerank_score": candidate["vector_score"] / 100.0,  # Convert to 0-1 range
+                                                "score": candidate["raw_score"],
+                                                "reasons": f"Vector similarity score: {candidate['raw_score']:.4f}%",
+                                                "highlighted_skills": [],
+                                                "gaps": [],
+                                                "recommended_questions_for_interview": [],
+                                                "text_excerpt": candidate.get("text_excerpt", "")
+                                            })
                                 
-                                # ถ้า reranked_results ยังว่าง ให้ใช้ fallback
-                                if len(reranked_results) == 0:
-                                    print("WARNING: reranked_results is empty after mapping, using fallback")
-                                    raise Exception("Reranked results is empty after mapping")
+                                print(f"Reranked {len(reranked_results)} candidates using Nova Lite (expected {len(candidates)})")
+                            
+                            # CRITICAL: Final check - ensure we have all candidates
+                            # Only add missing candidates if we actually have fewer than expected
+                            if len(reranked_results) < len(candidates):
+                                print(f"CRITICAL: Still missing candidates after all processing. Expected {len(candidates)}, got {len(reranked_results)}. Checking for missing candidates...")
+                                processed_names = {r.get('resume_name') for r in reranked_results}
+                                missing_count = 0
+                                for i, candidate in enumerate(candidates):
+                                    if candidate.get('resume_name') not in processed_names:
+                                        missing_count += 1
+                                        reranked_results.append({
+                                            "rank": len(reranked_results) + 1,
+                                            "resume_id": candidate["resume_id"],
+                                            "resume_name": candidate["resume_name"],
+                                            "match_score": candidate["vector_score"],
+                                            "rerank_score": candidate["vector_score"] / 100.0,
+                                            "score": candidate["raw_score"],
+                                            "reasons": f"Vector similarity score: {candidate['raw_score']:.4f}%",
+                                            "highlighted_skills": [],
+                                            "gaps": [],
+                                            "recommended_questions_for_interview": [],
+                                            "text_excerpt": candidate.get("text_excerpt", "")
+                                        })
+                                if missing_count > 0:
+                                    print(f"Added {missing_count} missing candidates via fallback")
+                                else:
+                                    print(f"WARNING: len(reranked_results) < len(candidates) but no missing candidates found! This is a bug.")
+                            else:
+                                print(f"SUCCESS: reranked_results ({len(reranked_results)}) >= candidates ({len(candidates)}). All candidates present.")
+                            
+                            # ถ้า reranked_results ยังว่าง ให้ใช้ fallback
+                            if len(reranked_results) == 0:
+                                print("WARNING: reranked_results is empty after mapping, using fallback")
+                                raise Exception("Reranked results is empty after mapping")
                             else:
                                 print("Warning: Nova Lite returned empty ranked list, using original results")
                                 # Fallback to original results
@@ -1201,29 +1504,9 @@ def lambda_handler(event, context):
                                         "recommended_questions_for_interview": [],
                                         "text_excerpt": candidate.get("text_excerpt", "")
                                     })
-                        else:
-                            print("Warning: Nova Lite returned no content, using original results")
-                            # Fallback to original results
-                            for i, candidate in enumerate(candidates, 1):
-                                reranked_results.append({
-                                    "rank": i,
-                                    "resume_id": candidate["resume_id"],
-                                    "resume_name": candidate["resume_name"],
-                                    "match_score": candidate["vector_score"],
-                                    "rerank_score": candidate["vector_score"],
-                                    "score": candidate["raw_score"],
-                                    "reasons": f"Vector similarity score: {candidate['raw_score']:.4f}",
-                                    "highlighted_skills": [],
-                                    "gaps": [],
-                                    "recommended_questions_for_interview": [],
-                                    "text_excerpt": candidate.get("text_excerpt", "")
-                                })
-                    except Exception as e:
-                        print(f"Warning: Reranking with Nova Lite failed: {str(e)}")
-                        import traceback
-                        print(traceback.format_exc())
-                        print("Falling back to original results without reranking")
-                        # Fallback: use original results without reranking
+                    else:
+                        print("Warning: Nova Lite returned no content, using original results")
+                        # Fallback to original results
                         for i, candidate in enumerate(candidates, 1):
                             reranked_results.append({
                                 "rank": i,
@@ -1238,29 +1521,85 @@ def lambda_handler(event, context):
                                 "recommended_questions_for_interview": [],
                                 "text_excerpt": candidate.get("text_excerpt", "")
                             })
-                    
-                    print(f"Final reranked_results count: {len(reranked_results)}")
-                    if len(reranked_results) > 0:
-                        print(f"First result: {reranked_results[0].get('resume_name', 'N/A')}")
-                    
-                    return response(200, {
-                        "query": {
-                            "job_id": job_id,
-                            "job_description": job_description[:100] + "..." if len(job_description) > 100 else job_description
-                        },
-                        "results": reranked_results,
-                        "total": len(reranked_results)
-                    })
-                else:
-                    return response(200, {
-                        "query": {
-                            "job_id": job_id
-                        },
-                        "results": [],
-                        "total": 0,
-                        "message": "Please provide resume_keys in request body"
-                    })
+                except Exception as e:
+                    print(f"Warning: Reranking with Nova Lite failed: {str(e)}")
+                    import traceback
+                    print(traceback.format_exc())
+                    print("Falling back to original results without reranking")
+                    # Fallback: use original results without reranking
+                    for i, candidate in enumerate(candidates, 1):
+                        reranked_results.append({
+                            "rank": i,
+                            "resume_id": candidate["resume_id"],
+                            "resume_name": candidate["resume_name"],
+                            "match_score": candidate["vector_score"],
+                            "rerank_score": candidate["vector_score"],
+                            "score": candidate["raw_score"],
+                            "reasons": f"Vector similarity score: {candidate['raw_score']:.4f}",
+                            "highlighted_skills": [],
+                            "gaps": [],
+                            "recommended_questions_for_interview": [],
+                            "text_excerpt": candidate.get("text_excerpt", "")
+                        })
                 
+                print(f"Final reranked_results count: {len(reranked_results)}")
+                if len(reranked_results) > 0:
+                    print(f"First result: {reranked_results[0].get('resume_name', 'N/A')}")
+                    print(f"All results: {[r.get('resume_name', 'N/A') for r in reranked_results]}")
+                
+                # CRITICAL: Ensure we return all reranked results (should be at least as many as candidates)
+                # Only add missing candidates if we actually have fewer than expected AND they are truly missing
+                if len(reranked_results) < len(candidates):
+                    print(f"CRITICAL ERROR: reranked_results ({len(reranked_results)}) < candidates ({len(candidates)}). Checking for missing candidates...")
+                    # Force add missing candidates (only if truly missing)
+                    processed_names = {r.get('resume_name') for r in reranked_results}
+                    missing_count = 0
+                    for candidate in candidates:
+                        if candidate.get('resume_name') not in processed_names:
+                            missing_count += 1
+                            reranked_results.append({
+                                "rank": len(reranked_results) + 1,
+                                "resume_id": candidate["resume_id"],
+                                "resume_name": candidate["resume_name"],
+                                "match_score": candidate["vector_score"],
+                                "rerank_score": candidate["vector_score"] / 100.0,
+                                "score": candidate["raw_score"],
+                                "reasons": f"Vector similarity score: {candidate['raw_score']:.4f}",
+                                "highlighted_skills": [],
+                                "gaps": [],
+                                "recommended_questions_for_interview": [],
+                                "text_excerpt": candidate.get("text_excerpt", "")
+                            })
+                    if missing_count > 0:
+                        print(f"Added {missing_count} missing candidates via fallback")
+                    else:
+                        print(f"WARNING: len(reranked_results) < len(candidates) but no missing candidates found! This is a bug. Skipping fallback.")
+                else:
+                    print(f"SUCCESS: reranked_results ({len(reranked_results)}) >= candidates ({len(candidates)}). No fallback needed.")
+                
+                # Remove duplicates if any (should not happen, but just in case)
+                seen_names = set()
+                unique_results = []
+                for r in reranked_results:
+                    name = r.get('resume_name')
+                    if name not in seen_names:
+                        seen_names.add(name)
+                        unique_results.append(r)
+                    else:
+                        print(f"WARNING: Duplicate resume found: {name}, skipping")
+                
+                if len(unique_results) < len(reranked_results):
+                    print(f"WARNING: Removed {len(reranked_results) - len(unique_results)} duplicate resumes")
+                    reranked_results = unique_results
+                
+                return response(200, {
+                    "query": {
+                        "job_id": job_id,
+                        "job_description": job_description[:100] + "..." if len(job_description) > 100 else job_description
+                    },
+                    "results": reranked_results,
+                    "total": len(reranked_results)
+                })
             except Exception as e:
                 print(f"Error in search_by_job: {str(e)}")
                 import traceback

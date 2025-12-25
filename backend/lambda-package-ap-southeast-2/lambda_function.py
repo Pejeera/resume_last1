@@ -905,6 +905,7 @@ def lambda_handler(event, context):
                     return response(400, {"error": "Job has no description"})
                 
                 # 2. Generate embedding for job
+                job_embedding = None
                 try:
                     embedding_body = {
                         "texts": [job_description[:5000]],
@@ -916,150 +917,265 @@ def lambda_handler(event, context):
                     )
                     embedding_result = json.loads(embedding_response["body"].read())
                     job_embedding = embedding_result.get("embeddings", [])[0]
+                    print(f"Generated job embedding successfully (dimension: {len(job_embedding)})")
                 except Exception as e:
                     print(f"Error generating embedding: {str(e)}")
                     return response(500, {"error": f"Failed to generate embedding: {str(e)}"})
                 
-                # 3. If resume_keys provided, search only those resumes
-                # Otherwise, we'd need a resumes index - for now, return placeholder
-                if resume_keys:
-                    # Process each resume and calculate similarity (process ALL resumes first)
-                    results = []
-                    print(f"Processing {len(resume_keys)} resumes (all resumes will be processed)...")
-                    print(f"Resume keys to process: {resume_keys}")
-                    for idx, resume_key in enumerate(resume_keys):  # Process ALL resumes
-                        try:
-                            original_key = resume_key
-                            # Get resume from S3
-                            if not resume_key.startswith(RESUME_PREFIX):
-                                if resume_key.startswith("Candidate/"):
-                                    resume_key = f"{RESUME_PREFIX}{resume_key}"
-                                else:
-                                    resume_key = f"{RESUME_PREFIX}Candidate/{resume_key}"
+                # 3. Vector search in resumes_index (use stored embeddings)
+                search_url = f"https://{OPENSEARCH_HOST}/resumes_index/_search"
+                search_res = None
+                use_vector_search = False
+                
+                # Try vector search if embedding is available
+                if job_embedding:
+                    try:
+                        # Build KNN search query
+                        search_query = {
+                            "size": 100,  # Get top 100 resumes
+                            "query": {
+                                "knn": {
+                                    "embeddings": {
+                                        "vector": job_embedding,
+                                        "k": 100  # Get top 100 for reranking
+                                    }
+                                }
+                            }
+                        }
+                        
+                        # If resume_keys provided, filter to only those resumes
+                        if resume_keys:
+                            # Extract resume IDs from keys (remove path and extension)
+                            resume_ids = []
+                            for key in resume_keys:
+                                # Normalize key
+                                if not key.startswith(RESUME_PREFIX):
+                                    if key.startswith("Candidate/"):
+                                        key = f"{RESUME_PREFIX}{key}"
+                                    else:
+                                        key = f"{RESUME_PREFIX}Candidate/{key}"
+                                # Extract ID (filename without extension)
+                                resume_id = key.split("/")[-1].replace(".pdf", "").replace(".docx", "").replace(".txt", "")
+                                if resume_id:
+                                    resume_ids.append(resume_id)
                             
-                            print(f"[{idx+1}/{len(resume_keys)}] Processing: original='{original_key}', normalized='{resume_key}'")
-                            
+                            if resume_ids:
+                                # Add filter to search query
+                                search_query["query"] = {
+                                    "bool": {
+                                        "must": [
+                                            {
+                                                "knn": {
+                                                    "embeddings": {
+                                                        "vector": job_embedding,
+                                                        "k": 100
+                                                    }
+                                                }
+                                            }
+                                        ],
+                                        "filter": [
+                                            {
+                                                "terms": {
+                                                    "id": resume_ids
+                                                }
+                                            }
+                                        ]
+                                    }
+                                }
+                                print(f"Filtering to {len(resume_ids)} specified resumes: {resume_ids}")
+                        
+                        search_res = requests.post(
+                            search_url,
+                            auth=opensearch_auth,
+                            headers={"Content-Type": "application/json"},
+                            json=search_query,
+                            timeout=10
+                        )
+                        
+                        if search_res.status_code == 200:
+                            use_vector_search = True
+                            print("Using vector search in resumes_index")
+                        else:
+                            print(f"Vector search failed ({search_res.status_code}), trying fallback...")
+                    except Exception as e:
+                        print(f"Vector search error: {str(e)}, trying fallback...")
+                
+                # 4. Process results from vector search or fallback
+                results = []
+                if use_vector_search:
+                    # Use results from OpenSearch KNN search
+                    hits = search_res.json().get("hits", {}).get("hits", [])
+                    print(f"Found {len(hits)} resumes from vector search")
+                    
+                    for hit in hits:
+                        source = hit.get("_source", {})
+                        raw_score = hit.get("_score", 0.0)
+                        normalized_score = min(raw_score / 10.0, 1.0) if raw_score > 0 else 0.0
+                        # Convert to percentage (0-100%)
+                        vector_score_percent = normalized_score * 100.0
+                        
+                        resume_id = hit.get("_id", "")
+                        results.append({
+                            "resume_id": resume_id,
+                            "resume_name": source.get("filename", resume_id),
+                            "score": vector_score_percent,
+                            "text_excerpt": source.get("text_excerpt", "")[:200] + "..." if len(source.get("text_excerpt", "")) > 200 else source.get("text_excerpt", "")
+                        })
+                    
+                    print(f"Processed {len(results)} resumes from OpenSearch vector search")
+                else:
+                    # Fallback: if vector search failed or no embedding, process resumes from S3
+                    if resume_keys:
+                        # Process each resume and calculate similarity (process ALL resumes first)
+                        print(f"Processing {len(resume_keys)} resumes from S3 (fallback mode)...")
+                        print(f"Resume keys to process: {resume_keys}")
+                        for idx, resume_key in enumerate(resume_keys):  # Process ALL resumes
                             try:
-                                obj = s3.get_object(Bucket=RESUME_BUCKET, Key=resume_key)
-                            except Exception as s3_error:
-                                print(f"  - S3 ERROR: Cannot get object '{resume_key}': {str(s3_error)}")
+                                original_key = resume_key
+                                # Get resume from S3
+                                if not resume_key.startswith(RESUME_PREFIX):
+                                    if resume_key.startswith("Candidate/"):
+                                        resume_key = f"{RESUME_PREFIX}{resume_key}"
+                                    else:
+                                        resume_key = f"{RESUME_PREFIX}Candidate/{resume_key}"
+                                
+                                print(f"[{idx+1}/{len(resume_keys)}] Processing: original='{original_key}', normalized='{resume_key}'")
+                                
+                                try:
+                                    obj = s3.get_object(Bucket=RESUME_BUCKET, Key=resume_key)
+                                except Exception as s3_error:
+                                    print(f"  - S3 ERROR: Cannot get object '{resume_key}': {str(s3_error)}")
+                                    results.append({
+                                        "resume_id": resume_key,
+                                        "resume_name": resume_key.split("/")[-1] if "/" in resume_key else resume_key,
+                                        "score": 0.0,
+                                        "text_excerpt": f"S3 Error: {str(s3_error)}",
+                                        "error": f"S3 Error: {str(s3_error)}"
+                                    })
+                                    continue
+                                file_content = obj["Body"].read()
+                                file_name = resume_key.split("/")[-1]
+                                
+                                # Extract text
+                                resume_text = ""
+                                if file_name.lower().endswith('.pdf'):
+                                    import PyPDF2
+                                    pdf_reader = PyPDF2.PdfReader(io.BytesIO(file_content))
+                                    resume_text = "\n".join([page.extract_text() for page in pdf_reader.pages])
+                                elif file_name.lower().endswith('.txt'):
+                                    resume_text = file_content.decode('utf-8')
+                                
+                                print(f"  - File: {file_name}, text length: {len(resume_text)}")
+                                
+                                if not resume_text or len(resume_text.strip()) < 10:
+                                    print(f"  - WARNING: Resume {file_name} has no extractable text or text too short (length: {len(resume_text)})")
+                                    # ยังคง append แต่มี flag ว่าไม่มี text
+                                    results.append({
+                                        "resume_id": resume_key,
+                                        "resume_name": file_name,
+                                        "score": 0.0,
+                                        "text_excerpt": "ไม่สามารถอ่านข้อความจากไฟล์นี้ได้",
+                                        "error": "Could not extract text from resume"
+                                    })
+                                    print(f"  - Appended empty text result. Current results count: {len(results)}")
+                                    continue
+                                
+                                if resume_text:
+                                    # Generate embedding for resume
+                                    resume_embed_body = {
+                                        "texts": [resume_text[:5000]],
+                                        "input_type": "search_document"
+                                    }
+                                    resume_emb_res = bedrock_runtime.invoke_model(
+                                        modelId=BEDROCK_EMBEDDING_MODEL,
+                                        body=json.dumps(resume_embed_body)
+                                    )
+                                    resume_emb_result = json.loads(resume_emb_res["body"].read())
+                                    resume_embedding = resume_emb_result.get("embeddings", [])[0]
+                                    
+                                    # Calculate cosine similarity (without numpy)
+                                    dot_product = sum(a * b for a, b in zip(job_embedding, resume_embedding))
+                                    norm_job = sum(a * a for a in job_embedding) ** 0.5
+                                    norm_resume = sum(a * a for a in resume_embedding) ** 0.5
+                                    similarity = dot_product / (norm_job * norm_resume) if (norm_job * norm_resume) > 0 else 0
+                                    
+                                    # Normalize similarity to match Mode A range (50-100%)
+                                    # Cosine similarity is already 0-1, but values are very small (0.0001-0.0003)
+                                    # To match Mode A range (50-100%), we need to:
+                                    # 1. Scale up small values (×1000 to make them visible)
+                                    # 2. Map to 0.5-1.0 range (same as Mode A normalization)
+                                    # Formula: normalized = 0.5 + (scaled - min_scaled) * (1.0 - 0.5) / (max_scaled - min_scaled)
+                                    # Assuming scaled range is 0.1-0.3, map to 0.5-1.0
+                                    scaled_similarity = float(similarity) * 1000.0  # Scale: 0.0001 → 0.1, 0.0003 → 0.3
+                                    # Map scaled_similarity (0.1-0.3) to normalized (0.5-1.0)
+                                    min_scaled = 0.1
+                                    max_scaled = 0.3
+                                    if scaled_similarity <= min_scaled:
+                                        normalized_similarity = 0.5
+                                    elif scaled_similarity >= max_scaled:
+                                        normalized_similarity = 1.0
+                                    else:
+                                        normalized_similarity = 0.5 + (scaled_similarity - min_scaled) * (1.0 - 0.5) / (max_scaled - min_scaled)
+                                    # Convert to percentage (0-100%)
+                                    similarity_percent = normalized_similarity * 100.0
+                                    
+                                    results.append({
+                                        "resume_id": resume_key,
+                                        "resume_name": file_name,
+                                        "score": similarity_percent,
+                                        "text_excerpt": resume_text[:200] + "..." if len(resume_text) > 200 else resume_text
+                                    })
+                                    print(f"  - Successfully processed resume {file_name} with score {similarity:.4f}. Current results count: {len(results)}")
+                            except Exception as e:
+                                print(f"  - ERROR processing resume {resume_key}: {str(e)}")
+                                import traceback
+                                print(traceback.format_exc())
+                                # Append error result instead of skipping
                                 results.append({
                                     "resume_id": resume_key,
                                     "resume_name": resume_key.split("/")[-1] if "/" in resume_key else resume_key,
                                     "score": 0.0,
-                                    "text_excerpt": f"S3 Error: {str(s3_error)}",
-                                    "error": f"S3 Error: {str(s3_error)}"
+                                    "text_excerpt": f"Error: {str(e)}",
+                                    "error": str(e)
                                 })
                                 continue
-                            file_content = obj["Body"].read()
-                            file_name = resume_key.split("/")[-1]
-                            
-                            # Extract text
-                            resume_text = ""
-                            if file_name.lower().endswith('.pdf'):
-                                import PyPDF2
-                                pdf_reader = PyPDF2.PdfReader(io.BytesIO(file_content))
-                                resume_text = "\n".join([page.extract_text() for page in pdf_reader.pages])
-                            elif file_name.lower().endswith('.txt'):
-                                resume_text = file_content.decode('utf-8')
-                            
-                            print(f"  - File: {file_name}, text length: {len(resume_text)}")
-                            
-                            if not resume_text or len(resume_text.strip()) < 10:
-                                print(f"  - WARNING: Resume {file_name} has no extractable text or text too short (length: {len(resume_text)})")
-                                # ยังคง append แต่มี flag ว่าไม่มี text
-                                results.append({
-                                    "resume_id": resume_key,
-                                    "resume_name": file_name,
-                                    "score": 0.0,
-                                    "text_excerpt": "ไม่สามารถอ่านข้อความจากไฟล์นี้ได้",
-                                    "error": "Could not extract text from resume"
-                                })
-                                print(f"  - Appended empty text result. Current results count: {len(results)}")
-                                continue
-                            
-                            if resume_text:
-                                # Generate embedding for resume
-                                resume_embed_body = {
-                                    "texts": [resume_text[:5000]],
-                                    "input_type": "search_document"
-                                }
-                                resume_emb_res = bedrock_runtime.invoke_model(
-                                    modelId=BEDROCK_EMBEDDING_MODEL,
-                                    body=json.dumps(resume_embed_body)
-                                )
-                                resume_emb_result = json.loads(resume_emb_res["body"].read())
-                                resume_embedding = resume_emb_result.get("embeddings", [])[0]
-                                
-                                # Calculate cosine similarity (without numpy)
-                                dot_product = sum(a * b for a, b in zip(job_embedding, resume_embedding))
-                                norm_job = sum(a * a for a in job_embedding) ** 0.5
-                                norm_resume = sum(a * a for a in resume_embedding) ** 0.5
-                                similarity = dot_product / (norm_job * norm_resume) if (norm_job * norm_resume) > 0 else 0
-                                
-                                # Normalize similarity to 0-1 range (similar to Mode A normalization)
-                                # Cosine similarity is already 0-1, but values are very small (0.0001-0.0003)
-                                # Scale: multiply by 100 to make small values more visible, then cap at 1.0
-                                # This will make 0.0001 → 0.01, 0.0003 → 0.03, etc.
-                                normalized_similarity = min(float(similarity) * 100.0, 1.0) if similarity > 0 else 0.0
-                                # Convert to percentage (0-100%)
-                                similarity_percent = normalized_similarity * 100.0
-                                
-                                results.append({
-                                    "resume_id": resume_key,
-                                    "resume_name": file_name,
-                                    "score": similarity_percent,
-                                    "text_excerpt": resume_text[:200] + "..." if len(resume_text) > 200 else resume_text
-                                })
-                                print(f"  - Successfully processed resume {file_name} with score {similarity:.4f}. Current results count: {len(results)}")
-                        except Exception as e:
-                            print(f"  - ERROR processing resume {resume_key}: {str(e)}")
-                            import traceback
-                            print(traceback.format_exc())
-                            # Append error result instead of skipping
-                            results.append({
-                                "resume_id": resume_key,
-                                "resume_name": resume_key.split("/")[-1] if "/" in resume_key else resume_key,
-                                "score": 0.0,
-                                "text_excerpt": f"Error: {str(e)}",
-                                "error": str(e)
-                            })
-                            continue
-                    
-                    # Sort by score descending
-                    results.sort(key=lambda x: x["score"], reverse=True)
-                    
-                    print(f"=== Mode B: Processed {len(results)} resumes successfully ===")
-                    print(f"Results summary: {[{'name': r['resume_name'], 'score': r['score']} for r in results]}")
-                    
-                    if len(results) == 0:
-                        return response(200, {
-                            "query": {
-                                "job_id": job_id,
-                                "job_description": job_description[:100] + "..." if len(job_description) > 100 else job_description
-                            },
-                            "results": [],
-                            "total": 0,
-                            "message": "ไม่สามารถประมวลผล Resume ได้ (อาจเป็นเพราะไฟล์ไม่ใช่ PDF/TXT หรือมีปัญหาในการอ่านไฟล์)"
-                        })
-                    
-                    # Select Top 3 based on embedding score
-                    top_results = results[:3]  # Select Top 3 based on embedding score
-                    print(f"Selected Top 3 resumes from {len(results)} total resumes based on embedding score")
-                    
-                    # Prepare candidates for reranking (only Top 3)
-                    candidates = []
-                    for result in top_results:
-                        candidates.append({
-                            "resume_id": result["resume_id"],
-                            "resume_name": result["resume_name"],
-                            "text_excerpt": result["text_excerpt"],
-                            "resume_text": "",  # Will be filled if needed
-                            "vector_score": result["score"],
-                            "raw_score": result["score"]
-                        })
-                    
-                    # Rerank with Nova Lite v1
+                    else:
+                        return response(400, {"error": "resume_keys is required when vector search is not available"})
+                
+                # Sort by score descending (for both vector search and fallback)
+                results.sort(key=lambda x: x["score"], reverse=True)
+                
+                print(f"=== Mode B: Processed {len(results)} resumes successfully ===")
+                print(f"Results summary: {[{'name': r['resume_name'], 'score': r['score']} for r in results]}")
+                
+                if len(results) == 0:
+                    return response(200, {
+                        "query": {
+                            "job_id": job_id,
+                            "job_description": job_description[:100] + "..." if len(job_description) > 100 else job_description
+                        },
+                        "results": [],
+                        "total": 0,
+                        "message": "ไม่สามารถประมวลผล Resume ได้ (อาจเป็นเพราะไฟล์ไม่ใช่ PDF/TXT หรือมีปัญหาในการอ่านไฟล์)"
+                    })
+                
+                # Select Top 3 based on embedding score
+                top_results = results[:3]  # Select Top 3 based on embedding score
+                print(f"Selected Top 3 resumes from {len(results)} total resumes based on embedding score")
+                
+                # Prepare candidates for reranking (only Top 3)
+                candidates = []
+                for result in top_results:
+                    candidates.append({
+                        "resume_id": result["resume_id"],
+                        "resume_name": result["resume_name"],
+                        "text_excerpt": result["text_excerpt"],
+                        "resume_text": "",  # Will be filled if needed
+                        "vector_score": result["score"],
+                        "raw_score": result["score"]
+                    })
+                
+                # Rerank with Nova Lite v1
                     reranked_results = []
                     try:
                         print(f"Attempting reranking with Nova Lite ({BEDROCK_RERANK_MODEL})...")

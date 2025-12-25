@@ -6,9 +6,9 @@ param(
     [string]$Region = "us-east-1"
 )
 
-Write-Host "=" * 60 -ForegroundColor Cyan
+Write-Host ("=" * 60) -ForegroundColor Cyan
 Write-Host "Deploy Lambda Function (ZIP Method)" -ForegroundColor Cyan
-Write-Host "=" * 60 -ForegroundColor Cyan
+Write-Host ("=" * 60) -ForegroundColor Cyan
 Write-Host "Function: $FunctionName" -ForegroundColor Yellow
 Write-Host "Region  : $Region" -ForegroundColor Yellow
 Write-Host ""
@@ -124,12 +124,12 @@ if (-not $updateComplete) {
 }
 
 Write-Host ""
-Write-Host "=" * 60 -ForegroundColor Cyan
+Write-Host ("=" * 60) -ForegroundColor Cyan
 Write-Host "✅ Deploy เสร็จสมบูรณ์!" -ForegroundColor Green
-Write-Host "=" * 60 -ForegroundColor Cyan
+Write-Host ("=" * 60) -ForegroundColor Cyan
 Write-Host ""
 Write-Host "💡 ทดสอบด้วย:" -ForegroundColor Cyan
 Write-Host "   python debug_jobs_s3.py" -ForegroundColor White
-Write-Host '   หรือเรียก API: GET /api/jobs/list' -ForegroundColor White
+Write-Host "   หรือเรียก API: GET /api/jobs/list" -ForegroundColor White
 Write-Host ""
 
