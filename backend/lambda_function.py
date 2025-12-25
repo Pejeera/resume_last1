@@ -662,11 +662,26 @@ def lambda_handler(event, context):
                 # 5. Prepare candidates for reranking
                 hits = search_res.json().get("hits", {}).get("hits", [])
                 all_candidates = []
+                # Normalize scores based on actual score range
+                all_scores = [hit.get("_score", 0.0) for hit in hits]
+                max_score = max(all_scores) if all_scores else 1.0
+                min_score = min(all_scores) if all_scores else 0.0
+                score_range = max_score - min_score if max_score > min_score else 1.0
+                
                 for hit in hits:
                     source = hit.get("_source", {})
                     raw_score = hit.get("_score", 0.0)
-                    normalized_score = min(raw_score / 10.0, 1.0) if raw_score > 0 else 0.0
-                    # Convert to percentage (0-100%)
+                    # Normalize to 0-1 range based on actual min/max
+                    if score_range > 0:
+                        normalized_score = (raw_score - min_score) / score_range
+                    else:
+                        normalized_score = 1.0 if raw_score > 0 else 0.0
+                    # Map to 30-90% range for more realistic scores (100% should be rare)
+                    # This ensures scores are meaningful and not inflated
+                    normalized_score = 0.3 + (normalized_score * 0.6)  # 30% to 90% range
+                    # Cap at 95% to reserve 100% for truly perfect matches
+                    normalized_score = min(0.95, normalized_score)
+                    # Convert to percentage (30-95%)
                     vector_score_percent = normalized_score * 100.0
                     
                     all_candidates.append({
@@ -722,7 +737,7 @@ def lambda_handler(event, context):
     {{
       "candidate_index": 0,
       "rerank_score": 0.95,
-      "reasons": "เหตุผลสั้นๆ",
+      "reasons": "เหตุผลที่ละเอียดและยาว (4-6 ประโยค) ระบุทักษะที่ตรงกับ Job, ทักษะที่ขาด, จุดแข็ง, จุดอ่อน, และความเหมาะสมโดยรวม",
       "highlighted_skills": ["skill1", "skill2"],
       "gaps": ["gap1"],
       "recommended_questions_for_interview": ["คำถาม1", "คำถาม2"]
@@ -779,6 +794,68 @@ def lambda_handler(event, context):
                                 idx = item.get("candidate_index", 0)
                                 if 0 <= idx < len(candidates):
                                     candidate = candidates[idx]
+                                    reasons = item.get("reasons", "ไม่มีข้อมูล")
+                                    raw_rerank_score = float(item.get("rerank_score", 0.0))
+                                    
+                                    # Validate and adjust rerank_score to match reasons AND match_score (Mode A)
+                                    # Get match_score as baseline (0-100% range, convert to 0-1)
+                                    match_score_normalized = candidate["vector_score"] / 100.0  # Convert 0-100% to 0-1
+                                    
+                                    # Analyze reasons text
+                                    reasons_lower = reasons.lower()
+                                    
+                                    # Check for strong negative indicators (should lower score)
+                                    strong_negative = any(keyword in reasons_lower for keyword in [
+                                        "ไม่เหมาะ", "ไม่มีประสบการณ์", "ไม่ตรง", "ไม่เกี่ยวข้อง", 
+                                        "ไม่สามารถ", "ไม่พบ", "ไม่เหมาะสม", "ขาดประสบการณ์"
+                                    ])
+                                    
+                                    # Check for strong positive indicators (should raise score)
+                                    strong_positive = any(keyword in reasons_lower for keyword in [
+                                        "เหมาะมาก", "มีประสบการณ์ตรง", "ตรงกับ", "เหมาะสมมาก", 
+                                        "เชี่ยวชาญ", "ประสบการณ์เต็ม", "เหมาะอย่างมาก", "มีทักษะครบ"
+                                    ])
+                                    
+                                    # Check for moderate positive indicators
+                                    moderate_positive = any(keyword in reasons_lower for keyword in [
+                                        "เหมาะสม", "มีทักษะ", "เหมาะ", "มีประสบการณ์", "ตรงกับบางส่วน"
+                                    ])
+                                    
+                                    # Check for gaps mentioned (should slightly lower score)
+                                    has_gaps = "ขาด" in reasons_lower or "จุดอ่อน" in reasons_lower or "ไม่พบ" in reasons_lower
+                                    
+                                    # Calculate adjusted score based on reasons AND match_score
+                                    if strong_negative:
+                                        # Force to low range (0.2-0.4), but consider match_score
+                                        adjusted_rerank_score = min(0.4, max(0.2, match_score_normalized * 0.5))
+                                        print(f"INFO (Mode A): Strong negative reasons detected. Adjusting rerank_score from {raw_rerank_score:.2f} to {adjusted_rerank_score:.2f} (based on match_score {candidate['vector_score']:.2f}%)")
+                                    elif strong_positive:
+                                        # Force to high range (0.7-1.0), but consider match_score
+                                        adjusted_rerank_score = max(0.7, min(1.0, match_score_normalized * 1.2))
+                                        print(f"INFO (Mode A): Strong positive reasons detected. Adjusting rerank_score from {raw_rerank_score:.2f} to {adjusted_rerank_score:.2f} (based on match_score {candidate['vector_score']:.2f}%)")
+                                    elif moderate_positive:
+                                        # Use match_score as base, but adjust slightly based on Nova Lite's score
+                                        base_score = match_score_normalized
+                                        # Blend Nova Lite's score (30%) with match_score (70%)
+                                        adjusted_rerank_score = (base_score * 0.7) + (raw_rerank_score * 0.3)
+                                        # If has gaps, reduce slightly
+                                        if has_gaps:
+                                            adjusted_rerank_score = adjusted_rerank_score * 0.9
+                                        adjusted_rerank_score = max(0.3, min(0.9, adjusted_rerank_score))
+                                        print(f"INFO (Mode A): Moderate positive reasons detected. Adjusting rerank_score from {raw_rerank_score:.2f} to {adjusted_rerank_score:.2f} (blended with match_score {candidate['vector_score']:.2f}%)")
+                                    else:
+                                        # Use match_score as primary, but blend with Nova Lite's score
+                                        base_score = match_score_normalized
+                                        adjusted_rerank_score = (base_score * 0.8) + (raw_rerank_score * 0.2)
+                                        # If has gaps, reduce
+                                        if has_gaps:
+                                            adjusted_rerank_score = adjusted_rerank_score * 0.85
+                                        adjusted_rerank_score = max(0.2, min(0.95, adjusted_rerank_score))
+                                        print(f"INFO (Mode A): Neutral reasons. Adjusting rerank_score from {raw_rerank_score:.2f} to {adjusted_rerank_score:.2f} (based on match_score {candidate['vector_score']:.2f}%)")
+                                    
+                                    # Final validation: ensure rerank_score is reasonable
+                                    adjusted_rerank_score = max(0.0, min(1.0, adjusted_rerank_score))
+                                    
                                     results.append({
                                         "rank": len(results) + 1,
                                         "job_id": candidate["job_id"],
@@ -788,15 +865,22 @@ def lambda_handler(event, context):
                                         "text_excerpt": candidate["text_excerpt"],
                                         "metadata": candidate["metadata"],
                                         "match_score": candidate["vector_score"],
-                                        "rerank_score": float(item.get("rerank_score", 0.0)),
+                                        "rerank_score": adjusted_rerank_score,
                                         "score": candidate["raw_score"],
-                                        "reasons": item.get("reasons", "ไม่มีข้อมูล"),
+                                        "reasons": reasons,
                                         "highlighted_skills": item.get("highlighted_skills", []),
                                         "gaps": item.get("gaps", []),
                                         "recommended_questions_for_interview": item.get("recommended_questions_for_interview", []),
                                         "match_reason": f"{'Vector similarity' if use_vector_search else 'Text match'} score: {candidate['raw_score']:.4f}"
                                     })
-                            print(f"Reranked {len(results)} candidates using Nova Lite")
+                            
+                            # CRITICAL: Sort results by rerank_score descending to ensure proper ranking
+                            results.sort(key=lambda x: float(x.get("rerank_score", 0.0)), reverse=True)
+                            # Update rank numbers after sorting
+                            for idx, result in enumerate(results, 1):
+                                result["rank"] = idx
+                            
+                            print(f"Reranked {len(results)} candidates using Nova Lite (sorted by rerank_score)")
                         else:
                             print("Warning: Nova Lite returned empty ranked list, using original results")
                             # Fallback to original results
@@ -1044,9 +1128,12 @@ def lambda_handler(event, context):
                                 normalized_score = (raw_score - min_score) / score_range
                             else:
                                 normalized_score = 1.0 if raw_score > 0 else 0.0
-                            # Map to 50-100% range for better visibility
-                            normalized_score = 0.5 + (normalized_score * 0.5)
-                            # Convert to percentage (50-100%)
+                            # Map to 30-90% range for more realistic scores (100% should be rare)
+                            # This ensures scores are meaningful and not inflated
+                            normalized_score = 0.3 + (normalized_score * 0.6)  # 30% to 90% range
+                            # Cap at 95% to reserve 100% for truly perfect matches
+                            normalized_score = min(0.95, normalized_score)
+                            # Convert to percentage (30-95%)
                             vector_score_percent = normalized_score * 100.0
                             
                             resume_id = hit.get("_id", "")
@@ -1195,8 +1282,11 @@ def lambda_handler(event, context):
                             normalized = (raw_sim - min_sim) / sim_range
                         else:
                             normalized = 1.0 if raw_sim > 0 else 0.0
-                        # Map to 50-100% range for better visibility
-                        normalized = 0.5 + (normalized * 0.5)
+                        # Map to 30-90% range for more realistic scores (100% should be rare)
+                        # This ensures scores are meaningful and not inflated
+                        normalized = 0.3 + (normalized * 0.6)  # 30% to 90% range
+                        # Cap at 95% to reserve 100% for truly perfect matches
+                        normalized = min(0.95, normalized)
                         r["score"] = normalized * 100.0
                         # Remove raw_similarity from final result
                         r.pop("raw_similarity", None)
@@ -1284,7 +1374,11 @@ def lambda_handler(event, context):
 
 **งานของคุณ:**
 1. วิเคราะห์และจัดอันดับ Resume ทั้งหมดที่ให้มา ({len(candidates)} resumes) ตามความเหมาะสมกับ Job นี้
-2. ให้เหตุผลสั้นๆ กระชับ (2-3 ประโยค) ว่าทำไมถึงเหมาะ
+2. ให้เหตุผลที่ละเอียดและยาว (4-6 ประโยค) ว่าทำไมถึงเหมาะหรือไม่เหมาะกับตำแหน่งงานนี้ โดยระบุ:
+   - ทักษะและประสบการณ์ที่ตรงกับ Job Description
+   - ทักษะและประสบการณ์ที่ขาดหายไป
+   - จุดแข็งและจุดอ่อนของ Resume นี้
+   - ความเหมาะสมโดยรวมกับตำแหน่งงาน
 3. ระบุจุดเด่น (highlighted_skills) และจุดที่ขาด (gaps) ถ้ามี
 4. แนะนำคำถามสำหรับสัมภาษณ์ (recommended_questions_for_interview)
 5. **สำคัญมาก:** ต้องจัดอันดับ Resume ทั้งหมดที่ให้มา ({len(candidates)} resumes) ไม่ใช่แค่บางอัน
@@ -1293,6 +1387,10 @@ def lambda_handler(event, context):
 - ห้ามสร้างข้อมูลที่ไม่มีในรายการ
 - ถ้าข้อมูลไม่พอ ให้ระบุว่า "ข้อมูลไม่เพียงพอ"
 - ใช้ภาษาไทยในการให้เหตุผล
+- **สำคัญมาก:** rerank_score ต้องสอดคล้องกับ reasons ที่ให้มา
+  * ถ้า reasons บอกว่า "เหมาะมาก" หรือ "มีประสบการณ์ตรง" → rerank_score ควรสูง (0.8-1.0)
+  * ถ้า reasons บอกว่า "เหมาะปานกลาง" หรือ "มีบางส่วน" → rerank_score ควรปานกลาง (0.5-0.8)
+  * ถ้า reasons บอกว่า "ไม่เหมาะ" หรือ "ไม่มีประสบการณ์" → rerank_score ควรต่ำ (0.0-0.5)
 - คะแนน rerank_score ควรอยู่ระหว่าง 0.0-1.0
 - **ต้องมี candidate_index ครบทุก Resume: 0, 1, 2, ... ถึง {len(candidates)-1}**
 
@@ -1302,7 +1400,7 @@ def lambda_handler(event, context):
     {{
       "candidate_index": 0,
       "rerank_score": 0.95,
-      "reasons": "เหตุผลสั้นๆ",
+      "reasons": "เหตุผลที่ละเอียดและยาว (4-6 ประโยค) ระบุทักษะที่ตรงกับ Job, ทักษะที่ขาด, จุดแข็ง, จุดอ่อน, และความเหมาะสมโดยรวม",
       "highlighted_skills": ["skill1", "skill2"],
       "gaps": ["gap1"],
       "recommended_questions_for_interview": ["คำถาม1", "คำถาม2"]
@@ -1310,7 +1408,7 @@ def lambda_handler(event, context):
     {{
       "candidate_index": 1,
       "rerank_score": 0.85,
-      "reasons": "เหตุผลสั้นๆ",
+      "reasons": "เหตุผลที่ละเอียดและยาว (4-6 ประโยค) ระบุทักษะที่ตรงกับ Job, ทักษะที่ขาด, จุดแข็ง, จุดอ่อน, และความเหมาะสมโดยรวม",
       "highlighted_skills": ["skill1"],
       "gaps": ["gap1"],
       "recommended_questions_for_interview": ["คำถาม1"]
@@ -1318,7 +1416,7 @@ def lambda_handler(event, context):
     {{
       "candidate_index": 2,
       "rerank_score": 0.75,
-      "reasons": "เหตุผลสั้นๆ",
+      "reasons": "เหตุผลที่ละเอียดและยาว (4-6 ประโยค) ระบุทักษะที่ตรงกับ Job, ทักษะที่ขาด, จุดแข็ง, จุดอ่อน, และความเหมาะสมโดยรวม",
       "highlighted_skills": [],
       "gaps": [],
       "recommended_questions_for_interview": []
@@ -1346,7 +1444,7 @@ def lambda_handler(event, context):
                             }
                         ],
                         "inferenceConfig": {
-                            "maxTokens": 2000,
+                            "maxTokens": 3000,
                             "temperature": 0.3,
                             "topP": 0.9
                         }
@@ -1413,14 +1511,82 @@ def lambda_handler(event, context):
                                     print(f"Processing ranked candidate index: {idx}, total candidates: {len(candidates)}")
                                     if 0 <= idx < len(candidates) and idx not in processed_indices:
                                         candidate = candidates[idx]
+                                        reasons = item.get("reasons", "ไม่มีข้อมูล")
+                                        raw_rerank_score = float(item.get("rerank_score", 0.0))
+                                        
+                                        # Validate and adjust rerank_score to match reasons AND match_score
+                                        # Get match_score as baseline (0-100% range, convert to 0-1)
+                                        match_score_normalized = candidate["vector_score"] / 100.0  # Convert 0-100% to 0-1
+                                        
+                                        # Analyze reasons text
+                                        reasons_lower = reasons.lower()
+                                        
+                                        # Check for strong negative indicators (should lower score)
+                                        strong_negative = any(keyword in reasons_lower for keyword in [
+                                            "ไม่เหมาะ", "ไม่มีประสบการณ์", "ไม่ตรง", "ไม่เกี่ยวข้อง", 
+                                            "ไม่สามารถ", "ไม่พบ", "ไม่เหมาะสม", "ขาดประสบการณ์"
+                                        ])
+                                        
+                                        # Check for strong positive indicators (should raise score)
+                                        strong_positive = any(keyword in reasons_lower for keyword in [
+                                            "เหมาะมาก", "มีประสบการณ์ตรง", "ตรงกับ", "เหมาะสมมาก", 
+                                            "เชี่ยวชาญ", "ประสบการณ์เต็ม", "เหมาะอย่างมาก", "มีทักษะครบ"
+                                        ])
+                                        
+                                        # Check for moderate positive indicators
+                                        moderate_positive = any(keyword in reasons_lower for keyword in [
+                                            "เหมาะสม", "มีทักษะ", "เหมาะ", "มีประสบการณ์", "ตรงกับบางส่วน"
+                                        ])
+                                        
+                                        # Check for gaps mentioned (should slightly lower score)
+                                        has_gaps = "ขาด" in reasons_lower or "จุดอ่อน" in reasons_lower or "ไม่พบ" in reasons_lower
+                                        
+                                        # Calculate adjusted score based on reasons AND match_score
+                                        # Start with Nova Lite's rerank_score, but adjust based on consistency
+                                        
+                                        # If reasons are strongly negative, score should be low
+                                        if strong_negative:
+                                            # Force to low range (0.2-0.4), but consider match_score
+                                            adjusted_rerank_score = min(0.4, max(0.2, match_score_normalized * 0.5))
+                                            print(f"INFO: Strong negative reasons detected. Adjusting rerank_score from {raw_rerank_score:.2f} to {adjusted_rerank_score:.2f} (based on match_score {candidate['vector_score']:.2f}%)")
+                                        # If reasons are strongly positive, score should be high
+                                        elif strong_positive:
+                                            # Force to high range (0.7-1.0), but consider match_score
+                                            adjusted_rerank_score = max(0.7, min(1.0, match_score_normalized * 1.2))
+                                            print(f"INFO: Strong positive reasons detected. Adjusting rerank_score from {raw_rerank_score:.2f} to {adjusted_rerank_score:.2f} (based on match_score {candidate['vector_score']:.2f}%)")
+                                        # If reasons are moderately positive
+                                        elif moderate_positive:
+                                            # Use match_score as base, but adjust slightly based on Nova Lite's score
+                                            base_score = match_score_normalized
+                                            # Blend Nova Lite's score (30%) with match_score (70%)
+                                            adjusted_rerank_score = (base_score * 0.7) + (raw_rerank_score * 0.3)
+                                            # If has gaps, reduce slightly
+                                            if has_gaps:
+                                                adjusted_rerank_score = adjusted_rerank_score * 0.9
+                                            adjusted_rerank_score = max(0.3, min(0.9, adjusted_rerank_score))
+                                            print(f"INFO: Moderate positive reasons detected. Adjusting rerank_score from {raw_rerank_score:.2f} to {adjusted_rerank_score:.2f} (blended with match_score {candidate['vector_score']:.2f}%)")
+                                        # If reasons are neutral or unclear, use match_score as primary indicator
+                                        else:
+                                            # Use match_score as primary, but blend with Nova Lite's score
+                                            base_score = match_score_normalized
+                                            adjusted_rerank_score = (base_score * 0.8) + (raw_rerank_score * 0.2)
+                                            # If has gaps, reduce
+                                            if has_gaps:
+                                                adjusted_rerank_score = adjusted_rerank_score * 0.85
+                                            adjusted_rerank_score = max(0.2, min(0.95, adjusted_rerank_score))
+                                            print(f"INFO: Neutral reasons. Adjusting rerank_score from {raw_rerank_score:.2f} to {adjusted_rerank_score:.2f} (based on match_score {candidate['vector_score']:.2f}%)")
+                                        
+                                        # Final validation: ensure rerank_score is reasonable
+                                        adjusted_rerank_score = max(0.0, min(1.0, adjusted_rerank_score))
+                                        
                                         reranked_results.append({
                                             "rank": len(reranked_results) + 1,
                                             "resume_id": candidate["resume_id"],
                                             "resume_name": candidate["resume_name"],
                                             "match_score": candidate["vector_score"],
-                                            "rerank_score": float(item.get("rerank_score", 0.0)),
+                                            "rerank_score": adjusted_rerank_score,
                                             "score": candidate["raw_score"],
-                                            "reasons": item.get("reasons", "ไม่มีข้อมูล"),
+                                            "reasons": reasons,
                                             "highlighted_skills": item.get("highlighted_skills", []),
                                             "gaps": item.get("gaps", []),
                                             "recommended_questions_for_interview": item.get("recommended_questions_for_interview", []),
@@ -1591,6 +1757,14 @@ def lambda_handler(event, context):
                 if len(unique_results) < len(reranked_results):
                     print(f"WARNING: Removed {len(reranked_results) - len(unique_results)} duplicate resumes")
                     reranked_results = unique_results
+                
+                # CRITICAL: Sort reranked_results by rerank_score descending to ensure proper ranking
+                reranked_results.sort(key=lambda x: float(x.get("rerank_score", 0.0)), reverse=True)
+                # Update rank numbers after sorting
+                for idx, result in enumerate(reranked_results, 1):
+                    result["rank"] = idx
+                
+                print(f"Final reranked_results sorted by rerank_score: {[(r.get('resume_name', 'N/A'), r.get('rerank_score', 0.0)) for r in reranked_results]}")
                 
                 return response(200, {
                     "query": {
