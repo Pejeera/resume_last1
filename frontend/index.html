@@ -324,6 +324,7 @@
             <button class="tab" onclick="switchMode('upload')">📤 อัปโหลด Resume</button>
             <button class="tab active" onclick="switchMode('modeA')">โหมด A: Resume → Jobs</button>
             <button class="tab" onclick="switchMode('modeB')">โหมด B: Job → Resumes</button>
+            <button class="tab" onclick="switchMode('jobsList')">📋 รายการ Jobs</button>
         </div>
 
         <div class="content">
@@ -390,6 +391,22 @@
                 </form>
             </div>
 
+            <!-- Jobs List Tab: แสดงรายการ Jobs และรายละเอียด -->
+            <div id="jobsList" class="mode-content">
+                <h2>รายการตำแหน่งงานทั้งหมด</h2>
+                <div class="form-group">
+                    <label>เลือกตำแหน่งงานเพื่อดูรายละเอียด</label>
+                    <select id="jobListSelect" onchange="handleJobSelect()" style="width: 100%; padding: 12px; border: 2px solid #ddd; border-radius: 8px; font-size: 1em;">
+                        <option value="">-- เลือกตำแหน่งงาน --</option>
+                    </select>
+                    <small id="jobListStatus" style="color: #666; font-size: 0.9em; margin-top: 5px; display: block;">กำลังโหลด...</small>
+                </div>
+                <div id="jobDetails" style="display: none; margin-top: 30px; padding: 20px; background: #f8f9fa; border-radius: 8px; border: 2px solid #667eea;">
+                    <h3 id="jobDetailsTitle" style="color: #667eea; margin-bottom: 20px;"></h3>
+                    <div id="jobDetailsContent" style="line-height: 1.8; color: #333;"></div>
+                </div>
+            </div>
+
             <!-- Loading -->
             <div class="loading" id="loading">
                 <div class="spinner"></div>
@@ -419,6 +436,7 @@
         // Load jobs list on page load
         window.addEventListener('DOMContentLoaded', async () => {
             await loadJobsList();
+            await loadJobsListForViewer();
         });
 
         async function loadJobsList() {
@@ -609,11 +627,25 @@
             currentMode = mode;
             // Update tabs
             document.querySelectorAll('.tab').forEach(tab => tab.classList.remove('active'));
-            event.target.classList.add('active');
+            if (event && event.target) {
+                event.target.classList.add('active');
+            } else {
+                // Fallback: find tab by mode
+                const tabs = document.querySelectorAll('.tab');
+                tabs.forEach((tab, index) => {
+                    const tabModes = ['upload', 'modeA', 'modeB', 'jobsList'];
+                    if (tabModes[index] === mode) {
+                        tab.classList.add('active');
+                    }
+                });
+            }
             
             // Update content
             document.querySelectorAll('.mode-content').forEach(content => content.classList.remove('active'));
-            document.getElementById(mode).classList.add('active');
+            const targetContent = document.getElementById(mode);
+            if (targetContent) {
+                targetContent.classList.add('active');
+            }
             
             // Clear results
             clearResults();
@@ -621,6 +653,11 @@
             // Reload resumes list when switching to mode A or B
             if (mode === 'modeA' || mode === 'modeB') {
                 loadResumesList();
+            }
+            
+            // Reload jobs list when switching to jobsList
+            if (mode === 'jobsList') {
+                loadJobsListForViewer();
             }
         }
 
@@ -956,6 +993,147 @@
 
             resultsDiv.innerHTML = html;
             document.getElementById('results').classList.add('active');
+        }
+
+        // Jobs List Viewer Functions
+        async function loadJobsListForViewer() {
+            const select = document.getElementById('jobListSelect');
+            const statusEl = document.getElementById('jobListStatus');
+            
+            try {
+                statusEl.textContent = 'กำลังโหลด jobs...';
+                const cacheBuster = `?t=${Date.now()}`;
+                const response = await fetch(`${API_BASE_URL}/jobs/list${cacheBuster}`);
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    const jobs = data.jobs || [];
+                    
+                    if (select) {
+                        select.innerHTML = '<option value="">-- เลือกตำแหน่งงาน --</option>';
+                        jobs.forEach(job => {
+                            const option = document.createElement('option');
+                            const jobId = job.id || job.job_id;
+                            option.value = jobId;
+                            option.textContent = job.title || 'N/A';
+                            option.setAttribute('data-job', JSON.stringify(job));
+                            select.appendChild(option);
+                        });
+                    }
+                    
+                    if (jobs.length > 0) {
+                        statusEl.textContent = `พบ ${jobs.length} ตำแหน่งงาน`;
+                        statusEl.style.color = '#28a745';
+                    } else {
+                        statusEl.textContent = 'ไม่พบตำแหน่งงาน';
+                        statusEl.style.color = '#ffc107';
+                    }
+                } else {
+                    const errorData = await response.json().catch(() => ({ detail: 'Unknown error' }));
+                    console.error('Failed to load jobs list:', errorData);
+                    if (select) select.innerHTML = `<option value="">❌ ไม่สามารถโหลด jobs ได้</option>`;
+                    statusEl.textContent = `Error: ${errorData.detail || 'Unknown error'}`;
+                    statusEl.style.color = '#dc3545';
+                }
+            } catch (error) {
+                console.error('Error loading jobs list:', error);
+                if (select) select.innerHTML = `<option value="">❌ เกิดข้อผิดพลาด</option>`;
+                statusEl.textContent = `Network error: ${error.message}`;
+                statusEl.style.color = '#dc3545';
+            }
+        }
+
+        function handleJobSelect() {
+            const select = document.getElementById('jobListSelect');
+            const detailsDiv = document.getElementById('jobDetails');
+            const titleDiv = document.getElementById('jobDetailsTitle');
+            const contentDiv = document.getElementById('jobDetailsContent');
+            
+            const selectedOption = select.options[select.selectedIndex];
+            
+            if (!selectedOption || !selectedOption.value) {
+                detailsDiv.style.display = 'none';
+                return;
+            }
+            
+            try {
+                const job = JSON.parse(selectedOption.getAttribute('data-job'));
+                
+                // แสดงรายละเอียด
+                titleDiv.textContent = job.title || 'N/A';
+                
+                let content = '';
+                
+                // Job ID
+                if (job.id || job.job_id) {
+                    content += `<p><strong>Job ID:</strong> ${job.id || job.job_id}</p>`;
+                }
+                
+                // Location
+                if (job.location || (job.metadata && job.metadata.location)) {
+                    content += `<p><strong>สถานที่:</strong> ${job.location || job.metadata.location}</p>`;
+                }
+                
+                // Department
+                if (job.department || (job.metadata && job.metadata.department)) {
+                    content += `<p><strong>แผนก:</strong> ${job.department || job.metadata.department}</p>`;
+                }
+                
+                // Employment Type
+                if (job.employment_type || (job.metadata && job.metadata.employment_type)) {
+                    content += `<p><strong>ประเภทงาน:</strong> ${job.employment_type || job.metadata.employment_type}</p>`;
+                }
+                
+                // Experience Years
+                if (job.experience_years || (job.metadata && job.metadata.experience_years)) {
+                    content += `<p><strong>ประสบการณ์:</strong> ${job.experience_years || job.metadata.experience_years} ปี</p>`;
+                }
+                
+                // Description
+                if (job.description) {
+                    content += `<div style="margin-top: 20px;"><strong>รายละเอียดงาน:</strong><div style="margin-top: 10px; padding: 15px; background: white; border-radius: 5px; white-space: pre-wrap; max-height: 400px; overflow-y: auto;">${job.description}</div></div>`;
+                }
+                
+                // Skills
+                if (job.skills && job.skills.length > 0) {
+                    content += `<div style="margin-top: 20px;"><strong>ทักษะที่ต้องการ:</strong><div style="margin-top: 10px;">${job.skills.map(skill => `<span class="badge" style="background: #667eea; color: white; padding: 5px 10px; border-radius: 5px; margin: 5px; display: inline-block;">${skill}</span>`).join('')}</div></div>`;
+                } else if (job.metadata && job.metadata.skills && job.metadata.skills.length > 0) {
+                    content += `<div style="margin-top: 20px;"><strong>ทักษะที่ต้องการ:</strong><div style="margin-top: 10px;">${job.metadata.skills.map(skill => `<span class="badge" style="background: #667eea; color: white; padding: 5px 10px; border-radius: 5px; margin: 5px; display: inline-block;">${skill}</span>`).join('')}</div></div>`;
+                }
+                
+                // Responsibilities
+                if (job.responsibilities && job.responsibilities.length > 0) {
+                    content += `<div style="margin-top: 20px;"><strong>หน้าที่ความรับผิดชอบ:</strong><ul style="margin-top: 10px; padding-left: 20px;">${job.responsibilities.map(resp => `<li style="margin: 5px 0;">${resp}</li>`).join('')}</ul></div>`;
+                } else if (job.metadata && job.metadata.responsibilities && job.metadata.responsibilities.length > 0) {
+                    content += `<div style="margin-top: 20px;"><strong>หน้าที่ความรับผิดชอบ:</strong><ul style="margin-top: 10px; padding-left: 20px;">${job.metadata.responsibilities.map(resp => `<li style="margin: 5px 0;">${resp}</li>`).join('')}</ul></div>`;
+                }
+                
+                // Requirements
+                if (job.requirements && job.requirements.length > 0) {
+                    content += `<div style="margin-top: 20px;"><strong>คุณสมบัติ:</strong><ul style="margin-top: 10px; padding-left: 20px;">${job.requirements.map(req => `<li style="margin: 5px 0;">${req}</li>`).join('')}</ul></div>`;
+                } else if (job.metadata && job.metadata.requirements && job.metadata.requirements.length > 0) {
+                    content += `<div style="margin-top: 20px;"><strong>คุณสมบัติ:</strong><ul style="margin-top: 10px; padding-left: 20px;">${job.metadata.requirements.map(req => `<li style="margin: 5px 0;">${req}</li>`).join('')}</ul></div>`;
+                }
+                
+                // Text Excerpt (if available)
+                if (job.text_excerpt) {
+                    content += `<div style="margin-top: 20px;"><strong>สรุป:</strong><div style="margin-top: 10px; padding: 15px; background: white; border-radius: 5px; color: #666;">${job.text_excerpt}</div></div>`;
+                }
+                
+                // Metadata (if available)
+                if (job.metadata) {
+                    const metadataStr = JSON.stringify(job.metadata, null, 2);
+                    content += `<div style="margin-top: 20px;"><strong>Metadata (JSON):</strong><div style="margin-top: 10px; padding: 15px; background: white; border-radius: 5px; font-family: monospace; font-size: 0.9em; max-height: 200px; overflow-y: auto; white-space: pre-wrap;">${metadataStr}</div></div>`;
+                }
+                
+                contentDiv.innerHTML = content;
+                detailsDiv.style.display = 'block';
+                
+            } catch (error) {
+                console.error('Error displaying job details:', error);
+                contentDiv.innerHTML = `<p style="color: #dc3545;">เกิดข้อผิดพลาดในการแสดงรายละเอียด: ${error.message}</p>`;
+                detailsDiv.style.display = 'block';
+            }
         }
 
     </script>

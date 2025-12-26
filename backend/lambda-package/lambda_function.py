@@ -258,16 +258,46 @@ def lambda_handler(event, context):
                             print(f"Error processing {s3_key}: {e}")
                             continue
                 
-                # Format jobs for frontend
-                result = [
-                    {
-                        "job_id": job.get("_id", job.get("id", job.get("job_id", ""))),
+                # Format jobs for frontend - ส่งข้อมูลทั้งหมดเพื่อแสดงรายละเอียด
+                result = []
+                for job in jobs_data:
+                    job_id = job.get("_id", job.get("id", job.get("job_id", "")))
+                    job_obj = {
+                        "id": job_id,
+                        "job_id": job_id,  # Backward compatibility
                         "title": job.get("title", "N/A"),
-                        "description": job.get("description", job.get("text_excerpt", ""))[:200],
-                        "created_at": job.get("created_at", "")
+                        "description": job.get("description", job.get("text_excerpt", "")),
+                        "text_excerpt": job.get("text_excerpt", job.get("description", "")[:500]),
+                        "created_at": job.get("created_at", ""),
+                        # Include all metadata fields
+                        "location": job.get("location", ""),
+                        "department": job.get("department", ""),
+                        "employment_type": job.get("employment_type", ""),
+                        "experience_years": job.get("experience_years", ""),
+                        "skills": job.get("skills", []),
+                        "responsibilities": job.get("responsibilities", []),
+                        "requirements": job.get("requirements", []),
+                        # Include metadata object if exists
+                        "metadata": job.get("metadata", {})
                     }
-                    for job in jobs_data
-                ]
+                    # If metadata exists, merge location and other fields from metadata
+                    if job.get("metadata") and isinstance(job.get("metadata"), dict):
+                        metadata = job.get("metadata")
+                        if not job_obj["location"] and metadata.get("location"):
+                            job_obj["location"] = metadata.get("location")
+                        if not job_obj["department"] and metadata.get("department"):
+                            job_obj["department"] = metadata.get("department")
+                        if not job_obj["employment_type"] and metadata.get("employment_type"):
+                            job_obj["employment_type"] = metadata.get("employment_type")
+                        if not job_obj["experience_years"] and metadata.get("experience_years"):
+                            job_obj["experience_years"] = metadata.get("experience_years")
+                        if not job_obj["skills"] and metadata.get("skills"):
+                            job_obj["skills"] = metadata.get("skills")
+                        if not job_obj["responsibilities"] and metadata.get("responsibilities"):
+                            job_obj["responsibilities"] = metadata.get("responsibilities")
+                        if not job_obj["requirements"] and metadata.get("requirements"):
+                            job_obj["requirements"] = metadata.get("requirements")
+                    result.append(job_obj)
                 
                 print(f"Loaded {len(result)} jobs from S3: {jobs_prefix}")
                 return response(200, {"jobs": result, "total": len(result)})
