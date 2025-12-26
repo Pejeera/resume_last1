@@ -395,15 +395,78 @@
             <div id="jobsList" class="mode-content">
                 <h2>รายการตำแหน่งงานทั้งหมด</h2>
                 <div class="form-group">
-                    <label>เลือกตำแหน่งงานเพื่อดูรายละเอียด</label>
+                    <label>เลือกตำแหน่งงานเพื่อดูและแก้ไขรายละเอียด</label>
                     <select id="jobListSelect" onchange="handleJobSelect()" style="width: 100%; padding: 12px; border: 2px solid #ddd; border-radius: 8px; font-size: 1em;">
                         <option value="">-- เลือกตำแหน่งงาน --</option>
                     </select>
                     <small id="jobListStatus" style="color: #666; font-size: 0.9em; margin-top: 5px; display: block;">กำลังโหลด...</small>
                 </div>
                 <div id="jobDetails" style="display: none; margin-top: 30px; padding: 20px; background: #f8f9fa; border-radius: 8px; border: 2px solid #667eea;">
-                    <h3 id="jobDetailsTitle" style="color: #667eea; margin-bottom: 20px;"></h3>
-                    <div id="jobDetailsContent" style="line-height: 1.8; color: #333;"></div>
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                        <h3 id="jobDetailsTitle" style="color: #667eea; margin: 0;"></h3>
+                        <button id="btnEditJob" onclick="toggleEditJob()" class="btn" style="background: #28a745; padding: 10px 20px; font-size: 0.9em; width: auto;">
+                            ✏️ แก้ไข
+                        </button>
+                    </div>
+                    <div id="jobDetailsView" style="line-height: 1.8; color: #333;"></div>
+                    <div id="jobDetailsEdit" style="display: none;">
+                        <form id="jobEditForm" onsubmit="handleJobUpdate(event)">
+                            <input type="hidden" id="editJobId" />
+                            
+                            <div class="form-group">
+                                <label for="editJobTitle">ตำแหน่งงาน (Title) *</label>
+                                <input type="text" id="editJobTitle" required style="width: 100%; padding: 12px; border: 2px solid #ddd; border-radius: 8px; font-size: 1em;">
+                            </div>
+                            
+                            <div class="form-group">
+                                <label for="editJobLocation">สถานที่ (Location)</label>
+                                <input type="text" id="editJobLocation" style="width: 100%; padding: 12px; border: 2px solid #ddd; border-radius: 8px; font-size: 1em;">
+                            </div>
+                            
+                            <div class="form-group">
+                                <label for="editJobDepartment">แผนก (Department)</label>
+                                <input type="text" id="editJobDepartment" style="width: 100%; padding: 12px; border: 2px solid #ddd; border-radius: 8px; font-size: 1em;">
+                            </div>
+                            
+                            <div class="form-group">
+                                <label for="editJobEmploymentType">ประเภทงาน (Employment Type)</label>
+                                <input type="text" id="editJobEmploymentType" style="width: 100%; padding: 12px; border: 2px solid #ddd; border-radius: 8px; font-size: 1em;">
+                            </div>
+                            
+                            <div class="form-group">
+                                <label for="editJobExperienceYears">ประสบการณ์ (Experience Years)</label>
+                                <input type="text" id="editJobExperienceYears" placeholder="เช่น 3-5" style="width: 100%; padding: 12px; border: 2px solid #ddd; border-radius: 8px; font-size: 1em;">
+                            </div>
+                            
+                            <div class="form-group">
+                                <label for="editJobDescription">รายละเอียดงาน (Description) *</label>
+                                <textarea id="editJobDescription" required style="width: 100%; padding: 12px; border: 2px solid #ddd; border-radius: 8px; font-size: 1em; min-height: 200px; font-family: inherit;"></textarea>
+                            </div>
+                            
+                            <div class="form-group">
+                                <label for="editJobSkills">ทักษะที่ต้องการ (Skills) - คั่นด้วยจุลภาค</label>
+                                <input type="text" id="editJobSkills" placeholder="เช่น Python, JavaScript, React" style="width: 100%; padding: 12px; border: 2px solid #ddd; border-radius: 8px; font-size: 1em;">
+                                <small style="color: #666; font-size: 0.9em;">กรอกทักษะคั่นด้วยจุลภาค (,) เช่น Python, JavaScript, React</small>
+                            </div>
+                            
+                            <div class="form-group">
+                                <label for="editJobResponsibilities">หน้าที่ความรับผิดชอบ (Responsibilities) - แต่ละบรรทัดเป็น 1 ข้อ</label>
+                                <textarea id="editJobResponsibilities" placeholder="เช่น&#10;พัฒนาระบบเว็บแอปพลิเคชัน&#10;ดูแลฐานข้อมูล&#10;เขียนเอกสารเทคนิค" style="width: 100%; padding: 12px; border: 2px solid #ddd; border-radius: 8px; font-size: 1em; min-height: 150px; font-family: inherit;"></textarea>
+                                <small style="color: #666; font-size: 0.9em;">แต่ละบรรทัดจะเป็น 1 ข้อ</small>
+                            </div>
+                            
+                            <div class="form-group">
+                                <label for="editJobRequirements">คุณสมบัติ (Requirements) - แต่ละบรรทัดเป็น 1 ข้อ</label>
+                                <textarea id="editJobRequirements" placeholder="เช่น&#10;จบการศึกษาระดับปริญญาตรี&#10;มีประสบการณ์ 3-5 ปี&#10;สามารถสื่อสารภาษาอังกฤษได้" style="width: 100%; padding: 12px; border: 2px solid #ddd; border-radius: 8px; font-size: 1em; min-height: 150px; font-family: inherit;"></textarea>
+                                <small style="color: #666; font-size: 0.9em;">แต่ละบรรทัดจะเป็น 1 ข้อ</small>
+                            </div>
+                            
+                            <div style="display: flex; gap: 10px; margin-top: 20px;">
+                                <button type="submit" class="btn" style="background: #28a745; flex: 1;">💾 บันทึก</button>
+                                <button type="button" onclick="cancelEditJob()" class="btn" style="background: #6c757d; flex: 1;">❌ ยกเลิก</button>
+                            </div>
+                        </form>
+                    </div>
                 </div>
             </div>
 
@@ -1043,11 +1106,14 @@
             }
         }
 
+        let currentEditingJob = null;
+
         function handleJobSelect() {
             const select = document.getElementById('jobListSelect');
             const detailsDiv = document.getElementById('jobDetails');
             const titleDiv = document.getElementById('jobDetailsTitle');
-            const contentDiv = document.getElementById('jobDetailsContent');
+            const viewDiv = document.getElementById('jobDetailsView');
+            const editDiv = document.getElementById('jobDetailsEdit');
             
             const selectedOption = select.options[select.selectedIndex];
             
@@ -1058,9 +1124,12 @@
             
             try {
                 const job = JSON.parse(selectedOption.getAttribute('data-job'));
+                currentEditingJob = job;
                 
-                // แสดงรายละเอียด
+                // แสดงรายละเอียด (view mode)
                 titleDiv.textContent = job.title || 'N/A';
+                viewDiv.style.display = 'block';
+                editDiv.style.display = 'none';
                 
                 let content = '';
                 
@@ -1120,19 +1189,148 @@
                     content += `<div style="margin-top: 20px;"><strong>สรุป:</strong><div style="margin-top: 10px; padding: 15px; background: white; border-radius: 5px; color: #666;">${job.text_excerpt}</div></div>`;
                 }
                 
-                // Metadata (if available)
-                if (job.metadata) {
-                    const metadataStr = JSON.stringify(job.metadata, null, 2);
-                    content += `<div style="margin-top: 20px;"><strong>Metadata (JSON):</strong><div style="margin-top: 10px; padding: 15px; background: white; border-radius: 5px; font-family: monospace; font-size: 0.9em; max-height: 200px; overflow-y: auto; white-space: pre-wrap;">${metadataStr}</div></div>`;
-                }
-                
-                contentDiv.innerHTML = content;
+                viewDiv.innerHTML = content;
                 detailsDiv.style.display = 'block';
                 
             } catch (error) {
                 console.error('Error displaying job details:', error);
-                contentDiv.innerHTML = `<p style="color: #dc3545;">เกิดข้อผิดพลาดในการแสดงรายละเอียด: ${error.message}</p>`;
+                viewDiv.innerHTML = `<p style="color: #dc3545;">เกิดข้อผิดพลาดในการแสดงรายละเอียด: ${error.message}</p>`;
                 detailsDiv.style.display = 'block';
+            }
+        }
+
+        function toggleEditJob() {
+            if (!currentEditingJob) return;
+            
+            const viewDiv = document.getElementById('jobDetailsView');
+            const editDiv = document.getElementById('jobDetailsEdit');
+            const btnEdit = document.getElementById('btnEditJob');
+            
+            if (editDiv.style.display === 'none') {
+                // Switch to edit mode
+                viewDiv.style.display = 'none';
+                editDiv.style.display = 'block';
+                btnEdit.textContent = '👁️ ดู';
+                btnEdit.style.background = '#6c757d';
+                
+                // Fill form with current job data
+                document.getElementById('editJobId').value = currentEditingJob.id || currentEditingJob.job_id;
+                document.getElementById('editJobTitle').value = currentEditingJob.title || '';
+                document.getElementById('editJobLocation').value = currentEditingJob.location || (currentEditingJob.metadata && currentEditingJob.metadata.location) || '';
+                document.getElementById('editJobDepartment').value = currentEditingJob.department || (currentEditingJob.metadata && currentEditingJob.metadata.department) || '';
+                document.getElementById('editJobEmploymentType').value = currentEditingJob.employment_type || (currentEditingJob.metadata && currentEditingJob.metadata.employment_type) || '';
+                document.getElementById('editJobExperienceYears').value = currentEditingJob.experience_years || (currentEditingJob.metadata && currentEditingJob.metadata.experience_years) || '';
+                document.getElementById('editJobDescription').value = currentEditingJob.description || '';
+                
+                // Skills (array to comma-separated string)
+                const skills = currentEditingJob.skills || (currentEditingJob.metadata && currentEditingJob.metadata.skills) || [];
+                document.getElementById('editJobSkills').value = Array.isArray(skills) ? skills.join(', ') : skills;
+                
+                // Responsibilities (array to newline-separated string)
+                const responsibilities = currentEditingJob.responsibilities || (currentEditingJob.metadata && currentEditingJob.metadata.responsibilities) || [];
+                document.getElementById('editJobResponsibilities').value = Array.isArray(responsibilities) ? responsibilities.join('\n') : responsibilities;
+                
+                // Requirements (array to newline-separated string)
+                const requirements = currentEditingJob.requirements || (currentEditingJob.metadata && currentEditingJob.metadata.requirements) || [];
+                document.getElementById('editJobRequirements').value = Array.isArray(requirements) ? requirements.join('\n') : requirements;
+            } else {
+                // Switch to view mode
+                viewDiv.style.display = 'block';
+                editDiv.style.display = 'none';
+                btnEdit.textContent = '✏️ แก้ไข';
+                btnEdit.style.background = '#28a745';
+            }
+        }
+
+        function cancelEditJob() {
+            toggleEditJob();
+        }
+
+        async function handleJobUpdate(event) {
+            event.preventDefault();
+            hideError();
+            showLoading();
+            
+            try {
+                const jobId = document.getElementById('editJobId').value;
+                const title = document.getElementById('editJobTitle').value;
+                const location = document.getElementById('editJobLocation').value;
+                const department = document.getElementById('editJobDepartment').value;
+                const employmentType = document.getElementById('editJobEmploymentType').value;
+                const experienceYears = document.getElementById('editJobExperienceYears').value;
+                const description = document.getElementById('editJobDescription').value;
+                
+                // Parse skills (comma-separated)
+                const skillsText = document.getElementById('editJobSkills').value;
+                const skills = skillsText ? skillsText.split(',').map(s => s.trim()).filter(s => s) : [];
+                
+                // Parse responsibilities (newline-separated)
+                const responsibilitiesText = document.getElementById('editJobResponsibilities').value;
+                const responsibilities = responsibilitiesText ? responsibilitiesText.split('\n').map(r => r.trim()).filter(r => r) : [];
+                
+                // Parse requirements (newline-separated)
+                const requirementsText = document.getElementById('editJobRequirements').value;
+                const requirements = requirementsText ? requirementsText.split('\n').map(r => r.trim()).filter(r => r) : [];
+                
+                // Build updated job object
+                const updatedJob = {
+                    id: jobId,
+                    _id: jobId,
+                    job_id: jobId,
+                    title: title,
+                    description: description,
+                    location: location,
+                    department: department,
+                    employment_type: employmentType,
+                    experience_years: experienceYears,
+                    skills: skills,
+                    responsibilities: responsibilities,
+                    requirements: requirements,
+                    metadata: {
+                        location: location,
+                        department: department,
+                        employment_type: employmentType,
+                        experience_years: experienceYears,
+                        skills: skills,
+                        responsibilities: responsibilities,
+                        requirements: requirements
+                    },
+                    created_at: currentEditingJob.created_at || new Date().toISOString()
+                };
+                
+                // Update job in S3
+                const updateResponse = await fetch(`${API_BASE_URL}/jobs/${encodeURIComponent(jobId)}`, {
+                    method: 'PUT',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ job: updatedJob })
+                });
+                
+                if (!updateResponse.ok) {
+                    const error = await updateResponse.json();
+                    throw new Error(error.error || 'Update failed');
+                }
+                
+                const updateResult = await updateResponse.json();
+                
+                // Show success message
+                showSuccess(`✅ บันทึกสำเร็จ! Job ${jobId} ถูกอัปเดตใน S3 และเวกเตอร์จะถูกอัปเดตใน OpenSearch อัตโนมัติ`);
+                
+                // Reload jobs list
+                await loadJobsListForViewer();
+                
+                // Update current job data
+                currentEditingJob = updatedJob;
+                
+                // Switch back to view mode and refresh
+                toggleEditJob();
+                handleJobSelect();
+                
+            } catch (error) {
+                showError(`เกิดข้อผิดพลาด: ${error.message}`);
+            } finally {
+                hideLoading();
             }
         }
 

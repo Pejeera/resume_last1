@@ -305,6 +305,236 @@ def lambda_handler(event, context):
                 print(f"Error fetching jobs from S3: {str(e)}")
                 return response(500, {"error": str(e), "jobs": [], "total": 0})
 
+        # ---- get single job by ID from S3 ----
+        if path.startswith("/api/jobs/") and path != "/api/jobs/list" and method == "GET":
+            try:
+                # Extract job_id from path (e.g., /api/jobs/job123)
+                job_id = path.split("/api/jobs/")[-1]
+                if not job_id:
+                    return response(400, {"error": "job_id is required"})
+                
+                jobs_prefix = f"{RESUME_PREFIX}jobs/"
+                # Try to find job file (could be {job_id}.json or in any .json file)
+                paginator = s3.get_paginator('list_objects_v2')
+                
+                for page in paginator.paginate(Bucket=RESUME_BUCKET, Prefix=jobs_prefix):
+                    if 'Contents' not in page:
+                        continue
+                    
+                    for obj in page['Contents']:
+                        s3_key = obj['Key']
+                        if not s3_key.endswith('.json'):
+                            continue
+                        
+                        try:
+                            file_obj = s3.get_object(Bucket=RESUME_BUCKET, Key=s3_key)
+                            content = file_obj['Body'].read().decode('utf-8')
+                            job_data = json.loads(content)
+                            
+                            # Check if this file contains the job we're looking for
+                            if isinstance(job_data, dict):
+                                job_file_id = job_data.get("_id", job_data.get("id", job_data.get("job_id", "")))
+                                if job_file_id == job_id:
+                                    # Format job data
+                                    job_obj = {
+                                        "id": job_file_id,
+                                        "job_id": job_file_id,
+                                        "title": job_data.get("title", "N/A"),
+                                        "description": job_data.get("description", job_data.get("text_excerpt", "")),
+                                        "text_excerpt": job_data.get("text_excerpt", job_data.get("description", "")[:500]),
+                                        "created_at": job_data.get("created_at", ""),
+                                        "location": job_data.get("location", ""),
+                                        "department": job_data.get("department", ""),
+                                        "employment_type": job_data.get("employment_type", ""),
+                                        "experience_years": job_data.get("experience_years", ""),
+                                        "skills": job_data.get("skills", []),
+                                        "responsibilities": job_data.get("responsibilities", []),
+                                        "requirements": job_data.get("requirements", []),
+                                        "metadata": job_data.get("metadata", {}),
+                                        "s3_key": s3_key  # Include S3 key for update
+                                    }
+                                    # Merge metadata fields
+                                    if job_data.get("metadata") and isinstance(job_data.get("metadata"), dict):
+                                        metadata = job_data.get("metadata")
+                                        if not job_obj["location"] and metadata.get("location"):
+                                            job_obj["location"] = metadata.get("location")
+                                        if not job_obj["department"] and metadata.get("department"):
+                                            job_obj["department"] = metadata.get("department")
+                                        if not job_obj["employment_type"] and metadata.get("employment_type"):
+                                            job_obj["employment_type"] = metadata.get("employment_type")
+                                        if not job_obj["experience_years"] and metadata.get("experience_years"):
+                                            job_obj["experience_years"] = metadata.get("experience_years")
+                                        if not job_obj["skills"] and metadata.get("skills"):
+                                            job_obj["skills"] = metadata.get("skills")
+                                        if not job_obj["responsibilities"] and metadata.get("responsibilities"):
+                                            job_obj["responsibilities"] = metadata.get("responsibilities")
+                                        if not job_obj["requirements"] and metadata.get("requirements"):
+                                            job_obj["requirements"] = metadata.get("requirements")
+                                    return response(200, {"job": job_obj})
+                            
+                            elif isinstance(job_data, list):
+                                # Check if list contains the job
+                                for job in job_data:
+                                    job_file_id = job.get("_id", job.get("id", job.get("job_id", "")))
+                                    if job_file_id == job_id:
+                                        # Format and return
+                                        job_obj = {
+                                            "id": job_file_id,
+                                            "job_id": job_file_id,
+                                            "title": job.get("title", "N/A"),
+                                            "description": job.get("description", job.get("text_excerpt", "")),
+                                            "text_excerpt": job.get("text_excerpt", job.get("description", "")[:500]),
+                                            "created_at": job.get("created_at", ""),
+                                            "location": job.get("location", ""),
+                                            "department": job.get("department", ""),
+                                            "employment_type": job.get("employment_type", ""),
+                                            "experience_years": job.get("experience_years", ""),
+                                            "skills": job.get("skills", []),
+                                            "responsibilities": job.get("responsibilities", []),
+                                            "requirements": job.get("requirements", []),
+                                            "metadata": job.get("metadata", {}),
+                                            "s3_key": s3_key
+                                        }
+                                        # Merge metadata fields
+                                        if job.get("metadata") and isinstance(job.get("metadata"), dict):
+                                            metadata = job.get("metadata")
+                                            if not job_obj["location"] and metadata.get("location"):
+                                                job_obj["location"] = metadata.get("location")
+                                            if not job_obj["department"] and metadata.get("department"):
+                                                job_obj["department"] = metadata.get("department")
+                                            if not job_obj["employment_type"] and metadata.get("employment_type"):
+                                                job_obj["employment_type"] = metadata.get("employment_type")
+                                            if not job_obj["experience_years"] and metadata.get("experience_years"):
+                                                job_obj["experience_years"] = metadata.get("experience_years")
+                                            if not job_obj["skills"] and metadata.get("skills"):
+                                                job_obj["skills"] = metadata.get("skills")
+                                            if not job_obj["responsibilities"] and metadata.get("responsibilities"):
+                                                job_obj["responsibilities"] = metadata.get("responsibilities")
+                                            if not job_obj["requirements"] and metadata.get("requirements"):
+                                                job_obj["requirements"] = metadata.get("requirements")
+                                        return response(200, {"job": job_obj})
+                        except Exception as e:
+                            print(f"Error processing {s3_key}: {e}")
+                            continue
+                
+                return response(404, {"error": f"Job {job_id} not found"})
+            except Exception as e:
+                print(f"Error fetching job from S3: {str(e)}")
+                import traceback
+                traceback.print_exc()
+                return response(500, {"error": str(e)})
+
+        # ---- update job in S3 (will trigger S3 event → auto update embedding in OpenSearch) ----
+        if path.startswith("/api/jobs/") and path != "/api/jobs/list" and method in ["PUT", "POST"]:
+            try:
+                # Extract job_id from path (e.g., /api/jobs/job123)
+                job_id = path.split("/api/jobs/")[-1]
+                if not job_id:
+                    return response(400, {"error": "job_id is required"})
+                
+                body = json.loads(event.get("body", "{}"))
+                updated_job = body.get("job") or body
+                
+                if not updated_job:
+                    return response(400, {"error": "job data is required"})
+                
+                # Ensure job_id matches
+                updated_job["id"] = job_id
+                updated_job["_id"] = job_id
+                updated_job["job_id"] = job_id
+                
+                # Find existing job file in S3
+                jobs_prefix = f"{RESUME_PREFIX}jobs/"
+                found_s3_key = None
+                existing_job_data = None
+                
+                paginator = s3.get_paginator('list_objects_v2')
+                for page in paginator.paginate(Bucket=RESUME_BUCKET, Prefix=jobs_prefix):
+                    if 'Contents' not in page:
+                        continue
+                    
+                    for obj in page['Contents']:
+                        s3_key = obj['Key']
+                        if not s3_key.endswith('.json'):
+                            continue
+                        
+                        try:
+                            file_obj = s3.get_object(Bucket=RESUME_BUCKET, Key=s3_key)
+                            content = file_obj['Body'].read().decode('utf-8')
+                            job_data = json.loads(content)
+                            
+                            # Check if this file contains the job we're looking for
+                            if isinstance(job_data, dict):
+                                job_file_id = job_data.get("_id", job_data.get("id", job_data.get("job_id", "")))
+                                if job_file_id == job_id:
+                                    found_s3_key = s3_key
+                                    existing_job_data = job_data
+                                    break
+                            elif isinstance(job_data, list):
+                                for job in job_data:
+                                    job_file_id = job.get("_id", job.get("id", job.get("job_id", "")))
+                                    if job_file_id == job_id:
+                                        found_s3_key = s3_key
+                                        existing_job_data = job_data
+                                        break
+                        except Exception as e:
+                            print(f"Error processing {s3_key}: {e}")
+                            continue
+                    
+                    if found_s3_key:
+                        break
+                
+                if not found_s3_key:
+                    # Create new file if not found
+                    found_s3_key = f"{jobs_prefix}{job_id}.json"
+                    existing_job_data = None
+                
+                # Prepare job data for S3 (preserve structure)
+                # If existing file contains a list, keep it as list; otherwise use dict
+                if existing_job_data is None:
+                    # New file - use dict
+                    job_to_save = updated_job
+                elif isinstance(existing_job_data, list):
+                    # Update job in list
+                    job_to_save = existing_job_data.copy()
+                    job_index = -1
+                    for i, job in enumerate(job_to_save):
+                        job_file_id = job.get("_id", job.get("id", job.get("job_id", "")))
+                        if job_file_id == job_id:
+                            job_index = i
+                            break
+                    if job_index >= 0:
+                        job_to_save[job_index] = updated_job
+                    else:
+                        job_to_save.append(updated_job)
+                else:
+                    # Single job dict - replace it
+                    job_to_save = updated_job
+                
+                # Save to S3
+                s3.put_object(
+                    Bucket=RESUME_BUCKET,
+                    Key=found_s3_key,
+                    Body=json.dumps(job_to_save, ensure_ascii=False, indent=2).encode('utf-8'),
+                    ContentType='application/json'
+                )
+                
+                print(f"Updated job {job_id} in S3: {found_s3_key}")
+                print(f"S3 event will trigger Lambda to update embedding in OpenSearch automatically")
+                
+                return response(200, {
+                    "message": f"Job {job_id} updated successfully in S3",
+                    "job_id": job_id,
+                    "s3_key": found_s3_key,
+                    "note": "S3 event will trigger automatic embedding update in OpenSearch"
+                })
+                
+            except Exception as e:
+                print(f"Error updating job in S3: {str(e)}")
+                import traceback
+                traceback.print_exc()
+                return response(500, {"error": str(e)})
+
         # ---- sync jobs from S3 to OpenSearch (with embeddings) ----
         if path == "/api/jobs/sync_from_s3" and method == "POST":
             try:
