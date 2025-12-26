@@ -875,8 +875,6 @@
                                     `<strong>จุดเด่น:</strong> ${item.highlighted_skills.map(s => `<span class="badge">${s}</span>`).join('')}<br>` : ''}
                                 ${item.gaps && item.gaps.length > 0 ? 
                                     `<strong>จุดที่ขาด:</strong> ${item.gaps.map(g => `<span class="badge" style="background:#ffebee;color:#c62828">${g}</span>`).join('')}<br>` : ''}
-                                ${item.recommended_questions_for_interview && item.recommended_questions_for_interview.length > 0 ? 
-                                    `<strong>คำถามแนะนำ:</strong><ul>${item.recommended_questions_for_interview.map(q => `<li>${q}</li>`).join('')}</ul>` : ''}
                             </div>
                         </td>
                     </tr>
@@ -945,8 +943,6 @@
                                     `<strong>จุดเด่น:</strong> ${item.highlighted_skills.map(s => `<span class="badge">${s}</span>`).join('')}<br>` : ''}
                                 ${item.gaps && item.gaps.length > 0 ? 
                                     `<strong>จุดที่ขาด:</strong> ${item.gaps.map(g => `<span class="badge" style="background:#ffebee;color:#c62828">${g}</span>`).join('')}<br>` : ''}
-                                ${item.recommended_questions_for_interview && item.recommended_questions_for_interview.length > 0 ? 
-                                    `<strong>คำถามแนะนำ:</strong><ul>${item.recommended_questions_for_interview.map(q => `<li>${q}</li>`).join('')}</ul>` : ''}
                             </div>
                         </td>
                     </tr>

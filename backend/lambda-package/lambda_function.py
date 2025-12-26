@@ -31,6 +31,127 @@ BEDROCK_EMBEDDING_MODEL = "cohere.embed-multilingual-v3"
 # Use model ID directly instead of inference profile
 BEDROCK_RERANK_MODEL = "amazon.nova-lite-v1:0"  # Changed from us.amazon.nova-lite-v1:0
 
+# Helper function to extract important information from resume for embedding
+def extract_important_resume_info(resume_text, max_chars=2048):
+    """
+    Extract important information from resume text for embedding.
+    Prioritizes: Name, Title, Contact, Skills, Experience, Education, Reference
+    """
+    if not resume_text:
+        return ""
+    
+    # If text is short enough, return all
+    if len(resume_text) <= max_chars:
+        return resume_text
+    
+    # Try to extract key sections
+    text_lower = resume_text.lower()
+    lines = resume_text.split('\n')
+    
+    # Priority sections (case-insensitive keywords)
+    priority_keywords = [
+        'contact', 'phone', 'email', 'location', 'address',
+        'skills', 'skill', 'technical skills', 'technical',
+        'experience', 'work experience', 'employment', 'internship',
+        'education', 'university', 'degree', 'gpa',
+        'reference', 'profile', 'summary', 'objective'
+    ]
+    
+    important_parts = []
+    current_section = []
+    in_important_section = False
+    
+    for i, line in enumerate(lines):
+        line_lower = line.lower().strip()
+        
+        # Check if this line is a section header
+        is_section_header = any(keyword in line_lower for keyword in priority_keywords) and len(line.strip()) < 100
+        
+        if is_section_header:
+            # Save previous section if it was important
+            if in_important_section and current_section:
+                important_parts.append('\n'.join(current_section))
+            # Start new important section
+            current_section = [line]
+            in_important_section = True
+        elif in_important_section:
+            # Continue adding to current important section
+            current_section.append(line)
+            # Limit section size
+            if len('\n'.join(current_section)) > 800:
+                important_parts.append('\n'.join(current_section))
+                current_section = []
+        else:
+            # Check if line contains important info (phone, email, location patterns)
+            if any(pattern in line_lower for pattern in ['@', 'phone', 'email', 'location', 'address', 'bang', 'bangkok', 'thailand']):
+                important_parts.append(line)
+    
+    # Add remaining section
+    if current_section:
+        important_parts.append('\n'.join(current_section))
+    
+    # Combine important parts
+    combined = '\n'.join(important_parts)
+    
+    # If still too long, take first max_chars with smart truncation
+    if len(combined) > max_chars:
+        # Try to keep complete sections
+        truncated = combined[:max_chars]
+        # Try to cut at a newline to avoid cutting mid-word
+        last_newline = truncated.rfind('\n')
+        if last_newline > max_chars * 0.8:  # If we can cut at a reasonable point
+            truncated = truncated[:last_newline]
+        return truncated
+    
+    # If we didn't find structured sections, use first max_chars (fallback)
+    if len(combined) < 100:
+        return resume_text[:max_chars]
+    
+    return combined
+
+# Helper function to extract important information from job for embedding
+def extract_important_job_info(job_title, job_location, job_description, max_chars=2048):
+    """
+    Extract important information from job for embedding.
+    Prioritizes: Title, Location, Description (with skills, requirements)
+    """
+    parts = []
+    
+    # Always include title and location first (highest priority)
+    if job_title:
+        parts.append(job_title)
+    if job_location:
+        parts.append(f"Location: {job_location}")
+    
+    # Then add description, prioritizing important sections
+    if job_description:
+        desc_lower = job_description.lower()
+        
+        # Try to extract key sections from description
+        if 'skills' in desc_lower or 'requirements' in desc_lower or 'responsibilities' in desc_lower:
+            # Description already has structure, use it
+            parts.append(job_description)
+        else:
+            # Use full description
+            parts.append(job_description)
+    
+    combined = '\n'.join(parts)
+    
+    # If too long, prioritize title + location + first part of description
+    if len(combined) > max_chars:
+        title_location = f"{job_title}\n{job_location if job_location else ''}".strip()
+        remaining_chars = max_chars - len(title_location) - 10  # Reserve some space
+        if remaining_chars > 0 and job_description:
+            desc_part = job_description[:remaining_chars]
+            # Try to cut at sentence boundary
+            last_period = desc_part.rfind('.')
+            if last_period > remaining_chars * 0.7:
+                desc_part = desc_part[:last_period + 1]
+            return f"{title_location}\n{desc_part}"
+        return title_location[:max_chars]
+    
+    return combined
+
 # OpenSearch credentials (from environment or default)
 OPENSEARCH_USERNAME = os.environ.get("OPENSEARCH_USERNAME", "Admin")
 OPENSEARCH_PASSWORD = os.environ.get("OPENSEARCH_PASSWORD", "P@ssw0rd")
@@ -274,12 +395,19 @@ def lambda_handler(event, context):
                                     metadata[key] = document[key]
                             document["metadata"] = metadata
                         
-                        # Generate embedding if not present
+                        # Generate embedding if not present (include location in embedding)
                         if "embeddings" not in document or not document.get("embeddings"):
                             try:
-                                full_text = f"{document.get('title', '')}\n{document.get('description', '')}"
+                                # Include title, location, and description in embedding
+                                job_title = document.get('title', '')
+                                job_location = document.get('metadata', {}).get('location', '') if isinstance(document.get('metadata'), dict) else ''
+                                job_description = document.get('description', '')
+                                
+                                # Use helper function to extract important info (prioritizes title, location, key parts of description)
+                                full_text = extract_important_job_info(job_title, job_location, job_description, max_chars=2048)
+                                
                                 embedding_body = {
-                                    "texts": [full_text[:2048]],  # Cohere limit
+                                    "texts": [full_text],  # Already optimized by extract_important_job_info
                                     "input_type": "search_document"
                                 }
                                 embedding_response = bedrock_runtime.invoke_model(
@@ -479,10 +607,13 @@ def lambda_handler(event, context):
                             }
                         }
                         
-                        # Generate embedding
+                        # Generate embedding using important information
                         try:
+                            # Extract important information from resume (prioritizes contact, skills, experience, education)
+                            important_text = extract_important_resume_info(resume_text, max_chars=2048)
+                            
                             embedding_body = {
-                                "texts": [resume_text[:2048]],  # Cohere limit
+                                "texts": [important_text],  # Already optimized by extract_important_resume_info
                                 "input_type": "search_document"
                             }
                             embedding_response = bedrock_runtime.invoke_model(
@@ -581,9 +712,11 @@ def lambda_handler(event, context):
                 # 3. Generate embedding (optional - will use text search if fails)
                 resume_embedding = None
                 try:
-                    # Cohere model has max 2048 chars limit
+                    # Extract important information from resume for embedding
+                    important_text = extract_important_resume_info(resume_text, max_chars=2048)
+                    
                     embedding_body = {
-                        "texts": [resume_text[:2048]],  # Limit to 2048 chars for Cohere
+                        "texts": [important_text],  # Already optimized by extract_important_resume_info
                         "input_type": "search_document"
                     }
                     embedding_response = bedrock_runtime.invoke_model(
@@ -707,7 +840,7 @@ def lambda_handler(event, context):
                     # Build prompt for reranking
                     resume_summary = resume_text[:500] + "..." if len(resume_text) > 500 else resume_text
                     candidates_text = "\n".join([
-                        f"{i+1}. {c.get('title', 'N/A')} - {c.get('text_excerpt', '')[:200]}..."
+                        f"{i+1}. **ตำแหน่งงาน:** {c.get('title', 'N/A')}\n   **สถานที่:** {c.get('metadata', {}).get('location', 'ไม่ระบุ')}\n   **รายละเอียด:** {c.get('text_excerpt', '')[:200]}..."
                         for i, c in enumerate(candidates)
                     ])
                     
@@ -720,16 +853,34 @@ def lambda_handler(event, context):
 {candidates_text}
 
 **งานของคุณ:**
-1. วิเคราะห์และจัดอันดับ Top 3 ตำแหน่งงานที่เหมาะสมที่สุดกับ Resume นี้
-2. ให้เหตุผลสั้นๆ กระชับ (2-3 ประโยค) ว่าทำไมถึงเหมาะ
+1. **สำคัญมาก:** วิเคราะห์และจัดอันดับ Top 3 ตำแหน่งงานที่เหมาะสมที่สุดกับ Resume นี้ โดยต้องพิจารณา:
+   - **ตำแหน่งงาน (Job Title)**: ตำแหน่งงานนั้นเหมาะสมกับ Resume นี้หรือไม่
+   - **สถานที่ (Location)**: ความเหมาะสมกับสถานที่ (ถ้า Resume มีข้อมูลสถานที่)
+   - **Job Description**: ทักษะและประสบการณ์ที่ตรงกับ Job Description
+2. ให้เหตุผลที่ละเอียดและยาว (4-6 ประโยค) ว่าทำไมถึงเหมาะหรือไม่เหมาะ โดย**ต้องระบุอย่างชัดเจน**:
+   - **ตำแหน่งงาน (Job Title)**: Resume นี้เหมาะสมกับตำแหน่งงานนั้นหรือไม่ อย่างไร - **ต้องระบุชื่อตำแหน่งงานที่ชัดเจน**
+   - **สถานที่ (Location)**: ความเหมาะสมกับสถานที่ - **ต้องระบุสถานที่ที่ชัดเจน** (ถ้ามีข้อมูลใน Resume หรือ Job)
+   - ทักษะและประสบการณ์ที่ตรงกับ Job Description
+   - ทักษะและประสบการณ์ที่ขาดหายไป
+   - จุดแข็งและจุดอ่อน
+   - ความเหมาะสมโดยรวม
 3. ระบุจุดเด่น (highlighted_skills) และจุดที่ขาด (gaps) ถ้ามี
 4. แนะนำคำถามสำหรับสัมภาษณ์ (recommended_questions_for_interview)
+5. **สำคัญมาก:** ต้องจัดอันดับตำแหน่งงานทั้งหมดที่ให้มา ({len(candidates)} jobs) ไม่ใช่แค่บางอัน - ต้องมี candidate_index ครบทุก Job: 0, 1, 2, ... ถึง {len(candidates)-1}
 
 **ข้อกำหนด:**
+- **สำคัญมาก:** ต้องพิจารณา **ตำแหน่งงาน (Job Title)** และ **สถานที่ (Location)** เป็นปัจจัยหลักในการจัดอันดับ
+  * ตำแหน่งงานที่เหมาะสมกับ Resume ควรได้คะแนนสูง
+  * ตำแหน่งงานที่มีสถานที่ใกล้เคียงหรือเหมาะสมควรได้คะแนนเพิ่ม
 - ห้ามสร้างข้อมูลที่ไม่มีในรายการ
 - ถ้าข้อมูลไม่พอ ให้ระบุว่า "ข้อมูลไม่เพียงพอ"
 - ใช้ภาษาไทยในการให้เหตุผล
+- **สำคัญมาก:** rerank_score ต้องสอดคล้องกับ reasons ที่ให้มา
+  * ถ้า reasons บอกว่า "เหมาะมาก" หรือ "มีประสบการณ์ตรง" หรือ "เหมาะสมกับตำแหน่งงาน" → rerank_score ควรสูง (0.8-1.0)
+  * ถ้า reasons บอกว่า "เหมาะปานกลาง" หรือ "มีบางส่วน" → rerank_score ควรปานกลาง (0.5-0.8)
+  * ถ้า reasons บอกว่า "ไม่เหมาะ" หรือ "ไม่มีประสบการณ์" หรือ "ไม่เหมาะสมกับตำแหน่งงาน" → rerank_score ควรต่ำ (0.0-0.5)
 - คะแนน rerank_score ควรอยู่ระหว่าง 0.0-1.0
+- **สำคัญมาก:** ต้องมี candidate_index ครบทุก Job: 0, 1, 2, ... ถึง {len(candidates)-1} - ห้ามขาด candidate_index ใดๆ
 
 **รูปแบบผลลัพธ์ (JSON):**
 {{
@@ -741,9 +892,30 @@ def lambda_handler(event, context):
       "highlighted_skills": ["skill1", "skill2"],
       "gaps": ["gap1"],
       "recommended_questions_for_interview": ["คำถาม1", "คำถาม2"]
+    }},
+    {{
+      "candidate_index": 1,
+      "rerank_score": 0.85,
+      "reasons": "เหตุผลที่ละเอียดและยาว (4-6 ประโยค) ระบุทักษะที่ตรงกับ Job, ทักษะที่ขาด, จุดแข็ง, จุดอ่อน, และความเหมาะสมโดยรวม",
+      "highlighted_skills": ["skill1"],
+      "gaps": ["gap1"],
+      "recommended_questions_for_interview": ["คำถาม1"]
+    }},
+    {{
+      "candidate_index": 2,
+      "rerank_score": 0.75,
+      "reasons": "เหตุผลที่ละเอียดและยาว (4-6 ประโยค) ระบุทักษะที่ตรงกับ Job, ทักษะที่ขาด, จุดแข็ง, จุดอ่อน, และความเหมาะสมโดยรวม",
+      "highlighted_skills": [],
+      "gaps": [],
+      "recommended_questions_for_interview": []
     }}
   ]
 }}
+
+**สำคัญมาก:** 
+- candidate_index ต้องเป็น 0, 1, 2, ... ตามลำดับ (0 ถึง {len(candidates)-1})
+- ต้องมี ranked_candidates ครบทุก Job ที่ให้มา ({len(candidates)} jobs)
+- ห้ามขาด candidate_index ใดๆ
 
 กรุณาให้ผลลัพธ์เป็น JSON เท่านั้น:"""
                     
@@ -787,12 +959,18 @@ def lambda_handler(event, context):
                         
                         ranked_data = json.loads(result_text)
                         ranked_list = ranked_data.get("ranked_candidates", [])
+                        print(f"Nova Lite returned {len(ranked_list)} ranked candidates (expected {len(candidates)})")
                         
                         if ranked_list and len(ranked_list) > 0:
+                            # CRITICAL: Check if Nova Lite returned all candidates
+                            if len(ranked_list) < len(candidates):
+                                print(f"WARNING (Mode A): Nova Lite returned only {len(ranked_list)} candidates but {len(candidates)} were expected. Adding missing candidates.")
+                            
                             # Map reranked results back to candidates
+                            processed_indices = set()
                             for item in ranked_list:
                                 idx = item.get("candidate_index", 0)
-                                if 0 <= idx < len(candidates):
+                                if 0 <= idx < len(candidates) and idx not in processed_indices:
                                     candidate = candidates[idx]
                                     reasons = item.get("reasons", "ไม่มีข้อมูล")
                                     raw_rerank_score = float(item.get("rerank_score", 0.0))
@@ -873,6 +1051,59 @@ def lambda_handler(event, context):
                                         "recommended_questions_for_interview": item.get("recommended_questions_for_interview", []),
                                         "match_reason": f"{'Vector similarity' if use_vector_search else 'Text match'} score: {candidate['raw_score']:.4f}"
                                     })
+                                    processed_indices.add(idx)
+                                else:
+                                    if idx in processed_indices:
+                                        print(f"WARNING (Mode A): candidate_index {idx} already processed, skipping duplicate")
+                                    else:
+                                        print(f"WARNING (Mode A): candidate_index {idx} is out of range (0-{len(candidates)-1})")
+                            
+                            # CRITICAL: If Nova Lite didn't return all candidates, add missing ones
+                            if len(results) < len(candidates):
+                                print(f"WARNING (Mode A): After mapping, only {len(results)} candidates mapped but {len(candidates)} were expected. Adding missing candidates.")
+                                for i, candidate in enumerate(candidates):
+                                    if i not in processed_indices:
+                                        results.append({
+                                            "rank": len(results) + 1,
+                                            "job_id": candidate["job_id"],
+                                            "job_title": candidate["title"],
+                                            "title": candidate["title"],
+                                            "description": candidate["description"],
+                                            "text_excerpt": candidate["text_excerpt"],
+                                            "metadata": candidate["metadata"],
+                                            "match_score": candidate["vector_score"],
+                                            "rerank_score": candidate["vector_score"] / 100.0,  # Convert to 0-1 range
+                                            "score": candidate["raw_score"],
+                                            "reasons": f"{'Vector similarity' if use_vector_search else 'Text match'} score: {candidate['raw_score']:.4f}%",
+                                            "highlighted_skills": [],
+                                            "gaps": [],
+                                            "recommended_questions_for_interview": [],
+                                            "match_reason": f"{'Vector similarity' if use_vector_search else 'Text match'} score: {candidate['raw_score']:.4f}"
+                                        })
+                            
+                            # CRITICAL: Final check - ensure we have all candidates
+                            if len(results) < len(candidates):
+                                print(f"CRITICAL (Mode A): Still missing candidates after all processing. Expected {len(candidates)}, got {len(results)}. Adding missing candidates.")
+                                processed_job_ids = {r.get('job_id') for r in results}
+                                for candidate in candidates:
+                                    if candidate.get('job_id') not in processed_job_ids:
+                                        results.append({
+                                            "rank": len(results) + 1,
+                                            "job_id": candidate["job_id"],
+                                            "job_title": candidate["title"],
+                                            "title": candidate["title"],
+                                            "description": candidate["description"],
+                                            "text_excerpt": candidate["text_excerpt"],
+                                            "metadata": candidate["metadata"],
+                                            "match_score": candidate["vector_score"],
+                                            "rerank_score": candidate["vector_score"] / 100.0,
+                                            "score": candidate["raw_score"],
+                                            "reasons": f"{'Vector similarity' if use_vector_search else 'Text match'} score: {candidate['raw_score']:.4f}%",
+                                            "highlighted_skills": [],
+                                            "gaps": [],
+                                            "recommended_questions_for_interview": [],
+                                            "match_reason": f"{'Vector similarity' if use_vector_search else 'Text match'} score: {candidate['raw_score']:.4f}"
+                                        })
                             
                             # CRITICAL: Sort results by rerank_score descending to ensure proper ranking
                             results.sort(key=lambda x: float(x.get("rerank_score", 0.0)), reverse=True)
@@ -880,7 +1111,7 @@ def lambda_handler(event, context):
                             for idx, result in enumerate(results, 1):
                                 result["rank"] = idx
                             
-                            print(f"Reranked {len(results)} candidates using Nova Lite (sorted by rerank_score)")
+                            print(f"Reranked {len(results)} candidates using Nova Lite (sorted by rerank_score, expected {len(candidates)})")
                         else:
                             print("Warning: Nova Lite returned empty ranked list, using original results")
                             # Fallback to original results
@@ -983,16 +1214,21 @@ def lambda_handler(event, context):
                     return response(404, {"error": f"Job {job_id} not found"})
                 
                 job_data = job_res.json().get("_source", {})
+                job_title = job_data.get("title", "")
                 job_description = job_data.get("description", job_data.get("text_excerpt", ""))
+                job_location = job_data.get("metadata", {}).get("location", "")
                 
                 if not job_description:
                     return response(400, {"error": "Job has no description"})
                 
-                # 2. Generate embedding for job
+                # 2. Generate embedding for job (include title and location)
                 job_embedding = None
                 try:
+                    # Use helper function to extract important info (prioritizes title, location, key parts of description)
+                    embedding_text = extract_important_job_info(job_title, job_location, job_description, max_chars=5000)
+                    
                     embedding_body = {
-                        "texts": [job_description[:5000]],
+                        "texts": [embedding_text],  # Already optimized by extract_important_job_info
                         "input_type": "search_query"
                     }
                     embedding_response = bedrock_runtime.invoke_model(
@@ -1208,26 +1444,15 @@ def lambda_handler(event, context):
                                     continue
                                 
                                 if resume_text:
-                                    # Generate embedding for resume
-                                    # Bedrock embedding model has max 2048 characters limit (by characters, not bytes)
-                                    # Truncate by characters to ensure we don't exceed limit
-                                    original_len = len(resume_text)
-                                    truncated_text = resume_text[:2048] if original_len > 2048 else resume_text
-                                    # Double-check: ensure it's not over 2048 characters
-                                    if len(truncated_text) > 2048:
-                                        truncated_text = truncated_text[:2047]
-                                    
-                                    # Verify truncation worked
-                                    final_len = len(truncated_text)
-                                    if final_len > 2048:
-                                        print(f"  - ERROR: Truncation failed! Text length: {final_len} (should be <= 2048)")
-                                        truncated_text = truncated_text[:2047]  # Force truncate one more time
+                                    # Generate embedding for resume using important information
+                                    # Extract important information (prioritizes contact, skills, experience, education)
+                                    important_text = extract_important_resume_info(resume_text, max_chars=2048)
                                     
                                     resume_embed_body = {
-                                        "texts": [truncated_text],
+                                        "texts": [important_text],  # Already optimized by extract_important_resume_info
                                         "input_type": "search_document"
                                     }
-                                    print(f"  - Truncated text: {len(truncated_text)} chars (original: {original_len} chars)")
+                                    print(f"  - Using important text: {len(important_text)} chars (original: {len(resume_text)} chars)")
                                     resume_emb_res = bedrock_runtime.invoke_model(
                                         modelId=BEDROCK_EMBEDDING_MODEL,
                                         body=json.dumps(resume_embed_body)
@@ -1358,6 +1583,9 @@ def lambda_handler(event, context):
                     print(f"Attempting reranking with Nova Lite ({BEDROCK_RERANK_MODEL})...")
                     
                     # Build prompt for reranking with full resume text
+                    # Include job title and location in prompt
+                    job_title_display = job_title if job_title else "ไม่ระบุ"
+                    job_location_display = job_location if job_location else "ไม่ระบุ"
                     job_summary = job_description[:1000] + "..." if len(job_description) > 1000 else job_description
                     candidates_text = "\n\n".join([
                         f"=== Resume {i+1}: {c.get('resume_name', 'N/A')} ===\n{c.get('resume_text', c.get('text_excerpt', 'N/A'))}"
@@ -1366,6 +1594,8 @@ def lambda_handler(event, context):
                     
                     rerank_prompt = f"""คุณเป็น AI ที่เชี่ยวชาญในการจับคู่ Resume กับ Job
 
+**ตำแหน่งงาน:** {job_title_display}
+**สถานที่:** {job_location_display}
 **Job Description:**
 {job_summary}
 
@@ -1373,26 +1603,34 @@ def lambda_handler(event, context):
 {candidates_text}
 
 **งานของคุณ:**
-1. วิเคราะห์และจัดอันดับ Resume ทั้งหมดที่ให้มา ({len(candidates)} resumes) ตามความเหมาะสมกับ Job นี้
-2. ให้เหตุผลที่ละเอียดและยาว (4-6 ประโยค) ว่าทำไมถึงเหมาะหรือไม่เหมาะกับตำแหน่งงานนี้ โดยระบุ:
+1. **สำคัญมาก:** วิเคราะห์และจัดอันดับ Resume ทั้งหมดที่ให้มา ({len(candidates)} resumes) ตามความเหมาะสมกับ Job นี้ โดยต้องพิจารณา:
+   - **ตำแหน่งงาน (Job Title)**: Resume ต้องเหมาะสมกับตำแหน่งงาน "{job_title_display}" นี้
+   - **สถานที่ (Location)**: พิจารณาความเหมาะสมกับสถานที่ "{job_location_display}" (ถ้า Resume มีข้อมูลสถานที่)
+   - **Job Description**: ทักษะและประสบการณ์ที่ตรงกับ Job Description
+2. ให้เหตุผลที่ละเอียดและยาว (4-6 ประโยค) ว่าทำไมถึงเหมาะหรือไม่เหมาะกับตำแหน่งงานนี้ โดย**ต้องระบุอย่างชัดเจน**:
+   - **ตำแหน่งงาน (Job Title)**: Resume นี้เหมาะสมกับตำแหน่ง "{job_title_display}" หรือไม่ อย่างไร - **ต้องระบุชื่อตำแหน่งงาน "{job_title_display}" ในเหตุผล**
+   - **สถานที่ (Location)**: ความเหมาะสมกับสถานที่ "{job_location_display}" - **ต้องระบุสถานที่ "{job_location_display}" ในเหตุผล** (ถ้ามีข้อมูลใน Resume หรือ Job)
    - ทักษะและประสบการณ์ที่ตรงกับ Job Description
    - ทักษะและประสบการณ์ที่ขาดหายไป
    - จุดแข็งและจุดอ่อนของ Resume นี้
    - ความเหมาะสมโดยรวมกับตำแหน่งงาน
 3. ระบุจุดเด่น (highlighted_skills) และจุดที่ขาด (gaps) ถ้ามี
 4. แนะนำคำถามสำหรับสัมภาษณ์ (recommended_questions_for_interview)
-5. **สำคัญมาก:** ต้องจัดอันดับ Resume ทั้งหมดที่ให้มา ({len(candidates)} resumes) ไม่ใช่แค่บางอัน
+5. **สำคัญมาก:** ต้องจัดอันดับ Resume ทั้งหมดที่ให้มา ({len(candidates)} resumes) ไม่ใช่แค่บางอัน - ต้องมี candidate_index ครบทุก Resume: 0, 1, 2, ... ถึง {len(candidates)-1}
 
 **ข้อกำหนด:**
+- **สำคัญมาก:** ต้องพิจารณา **ตำแหน่งงาน (Job Title)** และ **สถานที่ (Location)** เป็นปัจจัยหลักในการจัดอันดับ
+  * Resume ที่เหมาะสมกับตำแหน่งงาน "{job_title_display}" ควรได้คะแนนสูง
+  * Resume ที่มีสถานที่ใกล้เคียงหรือเหมาะสมกับ "{job_location_display}" ควรได้คะแนนเพิ่ม
 - ห้ามสร้างข้อมูลที่ไม่มีในรายการ
 - ถ้าข้อมูลไม่พอ ให้ระบุว่า "ข้อมูลไม่เพียงพอ"
 - ใช้ภาษาไทยในการให้เหตุผล
 - **สำคัญมาก:** rerank_score ต้องสอดคล้องกับ reasons ที่ให้มา
-  * ถ้า reasons บอกว่า "เหมาะมาก" หรือ "มีประสบการณ์ตรง" → rerank_score ควรสูง (0.8-1.0)
+  * ถ้า reasons บอกว่า "เหมาะมาก" หรือ "มีประสบการณ์ตรง" หรือ "เหมาะสมกับตำแหน่งงาน" → rerank_score ควรสูง (0.8-1.0)
   * ถ้า reasons บอกว่า "เหมาะปานกลาง" หรือ "มีบางส่วน" → rerank_score ควรปานกลาง (0.5-0.8)
-  * ถ้า reasons บอกว่า "ไม่เหมาะ" หรือ "ไม่มีประสบการณ์" → rerank_score ควรต่ำ (0.0-0.5)
+  * ถ้า reasons บอกว่า "ไม่เหมาะ" หรือ "ไม่มีประสบการณ์" หรือ "ไม่เหมาะสมกับตำแหน่งงาน" → rerank_score ควรต่ำ (0.0-0.5)
 - คะแนน rerank_score ควรอยู่ระหว่าง 0.0-1.0
-- **ต้องมี candidate_index ครบทุก Resume: 0, 1, 2, ... ถึง {len(candidates)-1}**
+- **สำคัญมาก:** ต้องมี candidate_index ครบทุก Resume: 0, 1, 2, ... ถึง {len(candidates)-1} - ห้ามขาด candidate_index ใดๆ
 
 **รูปแบบผลลัพธ์ (JSON):**
 {{
@@ -1444,7 +1682,7 @@ def lambda_handler(event, context):
                             }
                         ],
                         "inferenceConfig": {
-                            "maxTokens": 3000,
+                            "maxTokens": 5000,
                             "temperature": 0.3,
                             "topP": 0.9
                         }
@@ -1744,6 +1982,8 @@ def lambda_handler(event, context):
                     print(f"SUCCESS: reranked_results ({len(reranked_results)}) >= candidates ({len(candidates)}). No fallback needed.")
                 
                 # Remove duplicates if any (should not happen, but just in case)
+                # BUT: Only remove duplicates if we have MORE than expected candidates
+                # If we have exactly len(candidates), don't remove duplicates (they might be needed)
                 seen_names = set()
                 unique_results = []
                 for r in reranked_results:
@@ -1754,9 +1994,37 @@ def lambda_handler(event, context):
                     else:
                         print(f"WARNING: Duplicate resume found: {name}, skipping")
                 
-                if len(unique_results) < len(reranked_results):
+                # Only use unique_results if we have MORE than expected candidates
+                # If we have exactly len(candidates) or less, keep all results (even if duplicates)
+                if len(unique_results) < len(reranked_results) and len(reranked_results) > len(candidates):
                     print(f"WARNING: Removed {len(reranked_results) - len(unique_results)} duplicate resumes")
                     reranked_results = unique_results
+                elif len(unique_results) == len(candidates):
+                    # If unique results equals candidates, use unique (this is good)
+                    reranked_results = unique_results
+                    print(f"Using unique results: {len(unique_results)} candidates")
+                
+                # CRITICAL: Final check - ensure we have at least len(candidates) results
+                # If we have fewer, add missing candidates from the original candidates list
+                if len(reranked_results) < len(candidates):
+                    print(f"CRITICAL: After duplicate removal, only {len(reranked_results)} results but {len(candidates)} expected. Adding missing candidates.")
+                    existing_names = {r.get('resume_name') for r in reranked_results}
+                    for candidate in candidates:
+                        if candidate.get('resume_name') not in existing_names:
+                            reranked_results.append({
+                                "rank": len(reranked_results) + 1,
+                                "resume_id": candidate["resume_id"],
+                                "resume_name": candidate["resume_name"],
+                                "match_score": candidate["vector_score"],
+                                "rerank_score": candidate["vector_score"] / 100.0,
+                                "score": candidate["raw_score"],
+                                "reasons": f"Vector similarity score: {candidate['raw_score']:.4f}%",
+                                "highlighted_skills": [],
+                                "gaps": [],
+                                "recommended_questions_for_interview": [],
+                                "text_excerpt": candidate.get("text_excerpt", "")
+                            })
+                            print(f"Added missing candidate: {candidate.get('resume_name', 'N/A')}")
                 
                 # CRITICAL: Sort reranked_results by rerank_score descending to ensure proper ranking
                 reranked_results.sort(key=lambda x: float(x.get("rerank_score", 0.0)), reverse=True)
@@ -1764,7 +2032,41 @@ def lambda_handler(event, context):
                 for idx, result in enumerate(reranked_results, 1):
                     result["rank"] = idx
                 
+                # FINAL VERIFICATION: Ensure we return exactly len(candidates) results (or all if less than 3)
+                # Limit to top len(candidates) if we have more
+                if len(reranked_results) > len(candidates):
+                    print(f"WARNING: Have {len(reranked_results)} results but only need {len(candidates)}. Limiting to top {len(candidates)}.")
+                    reranked_results = reranked_results[:len(candidates)]
+                    # Update ranks again
+                    for idx, result in enumerate(reranked_results, 1):
+                        result["rank"] = idx
+                
+                print(f"Final reranked_results count: {len(reranked_results)} (expected: {len(candidates)})")
                 print(f"Final reranked_results sorted by rerank_score: {[(r.get('resume_name', 'N/A'), r.get('rerank_score', 0.0)) for r in reranked_results]}")
+                
+                # ABSOLUTE FINAL CHECK: If still not enough, force add from candidates
+                if len(reranked_results) < len(candidates):
+                    print(f"ABSOLUTE FINAL CHECK: Only {len(reranked_results)} results, forcing to add all {len(candidates)} candidates")
+                    final_names = {r.get('resume_name') for r in reranked_results}
+                    for candidate in candidates:
+                        if candidate.get('resume_name') not in final_names:
+                            reranked_results.append({
+                                "rank": len(reranked_results) + 1,
+                                "resume_id": candidate["resume_id"],
+                                "resume_name": candidate["resume_name"],
+                                "match_score": candidate["vector_score"],
+                                "rerank_score": candidate["vector_score"] / 100.0,
+                                "score": candidate["raw_score"],
+                                "reasons": f"Vector similarity score: {candidate['raw_score']:.4f}%",
+                                "highlighted_skills": [],
+                                "gaps": [],
+                                "recommended_questions_for_interview": [],
+                                "text_excerpt": candidate.get("text_excerpt", "")
+                            })
+                    # Re-sort and re-rank
+                    reranked_results.sort(key=lambda x: float(x.get("rerank_score", 0.0)), reverse=True)
+                    for idx, result in enumerate(reranked_results, 1):
+                        result["rank"] = idx
                 
                 return response(200, {
                     "query": {
@@ -1783,39 +2085,205 @@ def lambda_handler(event, context):
         return response(404, {"error": "Not found"})
 
     # =====================================================
-    # 2) S3 EVENT → index jobs
+    # 2) S3 EVENT → index jobs/resumes with embeddings (AUTO)
     # =====================================================
     if "Records" in event:
+        jobs_processed = 0
+        resumes_processed = 0
+        
         for record in event["Records"]:
             bucket = record["s3"]["bucket"]["name"]
             key = urllib.parse.unquote_plus(record["s3"]["object"]["key"])
 
-            obj = s3.get_object(Bucket=bucket, Key=key)
-            jobs = json.loads(obj["Body"].read().decode("utf-8"))
+            print(f"Processing S3 event: bucket={bucket}, key={key}")
 
-            for job in jobs:
-                doc_id = job.get("id")
-                if not doc_id:
-                    continue
+            # Check if it's a job file (JSON in jobs/ folder)
+            if key.startswith(f"{RESUME_PREFIX}jobs/") and key.endswith('.json'):
+                try:
+                    obj = s3.get_object(Bucket=bucket, Key=key)
+                    jobs_data = json.loads(obj["Body"].read().decode("utf-8"))
+                    
+                    if isinstance(jobs_data, dict):
+                        jobs_data = [jobs_data]
+                    elif not isinstance(jobs_data, list):
+                        print(f"Skipping {key}: Invalid format")
+                        continue
 
-                # ห้ามมี _id ใน body
-                job.pop("_id", None)
+                    for job_data in jobs_data:
+                        job_id = job_data.get("_id") or job_data.get("job_id") or job_data.get("id")
+                        
+                        if not job_id:
+                            print(f"Skipping job: no ID found")
+                            continue
 
-                url = f"https://{OPENSEARCH_HOST}/{INDEX_NAME}/_doc/{doc_id}"
+                        # Prepare document - normalize structure
+                        document = {k: v for k, v in job_data.items() if k != "_id"}
+                        document["id"] = job_id
 
-                res = requests.put(
-                    url,
-                    auth=opensearch_auth,
-                    headers={"Content-Type": "application/json"},
-                    data=json.dumps(job)
-                )
+                        # Build description from available fields
+                        if "description" not in document or not document.get("description"):
+                            desc_parts = []
+                            if document.get("title"):
+                                desc_parts.append(f"Title: {document.get('title')}")
+                            if document.get("skills"):
+                                desc_parts.append(f"Skills: {', '.join(document.get('skills', []))}")
+                            if document.get("responsibilities"):
+                                desc_parts.append(f"Responsibilities: {' '.join(document.get('responsibilities', []))}")
+                            if document.get("requirements"):
+                                desc_parts.append(f"Requirements: {' '.join(document.get('requirements', []))}")
+                            document["description"] = "\n".join(desc_parts)
 
-                if res.status_code not in (200, 201):
-                    print("ERROR:", res.text)
-                else:
-                    print(f"Indexed job {doc_id}")
+                        # Create text_excerpt
+                        if "text_excerpt" not in document:
+                            document["text_excerpt"] = document.get("description", "")[:500]
 
-        return response(200, {"message": "Indexed jobs successfully"})
+                        # Create metadata object
+                        if "metadata" not in document:
+                            metadata = {}
+                            for meta_key in ["department", "location", "employment_type", "experience_years", "skills", "responsibilities", "requirements"]:
+                                if meta_key in document:
+                                    metadata[meta_key] = document[meta_key]
+                            document["metadata"] = metadata
+
+                        # ALWAYS generate embedding (auto-update when file changes)
+                        try:
+                            job_title = document.get('title', '')
+                            job_location = document.get('metadata', {}).get('location', '') if isinstance(document.get('metadata'), dict) else ''
+                            job_description = document.get('description', '')
+                            
+                            # Use helper function to extract important info
+                            full_text = extract_important_job_info(job_title, job_location, job_description, max_chars=2048)
+                            
+                            embedding_body = {
+                                "texts": [full_text],
+                                "input_type": "search_document"
+                            }
+                            embedding_response = bedrock_runtime.invoke_model(
+                                modelId=BEDROCK_EMBEDDING_MODEL,
+                                body=json.dumps(embedding_body)
+                            )
+                            embedding_result = json.loads(embedding_response["body"].read())
+                            document["embeddings"] = embedding_result.get("embeddings", [])[0]
+                            print(f"Generated embedding for job {job_id} (dimension: {len(document['embeddings'])})")
+                        except Exception as e:
+                            print(f"Warning: Failed to generate embedding for job {job_id}: {e}")
+                            import traceback
+                            traceback.print_exc()
+                            # Continue without embedding
+
+                        # Index to OpenSearch (jobs_index)
+                        index_doc_url = f"https://{OPENSEARCH_HOST}/jobs_index/_doc/{job_id}"
+                        index_res = requests.put(
+                            index_doc_url,
+                            auth=opensearch_auth,
+                            headers={"Content-Type": "application/json"},
+                            json=document,
+                            timeout=10
+                        )
+
+                        if index_res.status_code in [200, 201]:
+                            jobs_processed += 1
+                            print(f"Indexed job {job_id} with embedding")
+                        else:
+                            print(f"Failed to index job {job_id}: {index_res.status_code} - {index_res.text}")
+
+                except Exception as e:
+                    print(f"Error processing job file {key}: {e}")
+                    import traceback
+                    traceback.print_exc()
+
+            # Check if it's a resume file (PDF/TXT in Candidate/ folder)
+            elif key.startswith(f"{RESUME_PREFIX}Candidate/") and (key.endswith('.pdf') or key.endswith('.txt')):
+                try:
+                    # Extract resume_id from key
+                    resume_id = key.split("/")[-1].replace(".pdf", "").replace(".docx", "").replace(".txt", "")
+                    if not resume_id:
+                        resume_id = key.replace("/", "_").replace(".", "_")
+
+                    print(f"Processing resume: {key} (ID: {resume_id})")
+
+                    # Get file from S3
+                    file_obj = s3.get_object(Bucket=bucket, Key=key)
+                    file_content = file_obj["Body"].read()
+                    file_name = key.split("/")[-1]
+
+                    # Extract text
+                    resume_text = ""
+                    try:
+                        if file_name.lower().endswith('.pdf'):
+                            import PyPDF2
+                            pdf_reader = PyPDF2.PdfReader(io.BytesIO(file_content))
+                            resume_text = "\n".join([page.extract_text() for page in pdf_reader.pages])
+                        elif file_name.lower().endswith('.txt'):
+                            resume_text = file_content.decode('utf-8')
+                        else:
+                            resume_text = f"Resume file: {file_name}"
+                    except Exception as e:
+                        print(f"Warning: Could not extract text from {file_name}: {e}")
+                        resume_text = f"Resume file: {file_name}"
+
+                    if not resume_text or len(resume_text.strip()) < 10:
+                        print(f"Skipping {resume_id}: No text extracted")
+                        continue
+
+                    # Prepare document
+                    document = {
+                        "id": resume_id,
+                        "filename": file_name,
+                        "full_text": resume_text,
+                        "text_excerpt": resume_text[:500],
+                        "metadata": {
+                            "s3_key": key,
+                            "file_size": len(file_content)
+                        }
+                    }
+
+                    # ALWAYS generate embedding (auto-update when file changes)
+                    try:
+                        # Extract important information from resume
+                        important_text = extract_important_resume_info(resume_text, max_chars=2048)
+                        
+                        embedding_body = {
+                            "texts": [important_text],
+                            "input_type": "search_document"
+                        }
+                        embedding_response = bedrock_runtime.invoke_model(
+                            modelId=BEDROCK_EMBEDDING_MODEL,
+                            body=json.dumps(embedding_body)
+                        )
+                        embedding_result = json.loads(embedding_response["body"].read())
+                        document["embeddings"] = embedding_result.get("embeddings", [])[0]
+                        print(f"Generated embedding for resume {resume_id} (dimension: {len(document['embeddings'])})")
+                    except Exception as e:
+                        print(f"Warning: Failed to generate embedding for resume {resume_id}: {e}")
+                        # Continue without embedding
+
+                    # Index to OpenSearch (resumes_index)
+                    index_doc_url = f"https://{OPENSEARCH_HOST}/resumes_index/_doc/{resume_id}"
+                    index_res = requests.put(
+                        index_doc_url,
+                        auth=opensearch_auth,
+                        headers={"Content-Type": "application/json"},
+                        json=document,
+                        timeout=10
+                    )
+
+                    if index_res.status_code in [200, 201]:
+                        resumes_processed += 1
+                        print(f"Indexed resume {resume_id} with embedding")
+                    else:
+                        print(f"Failed to index resume {resume_id}: {index_res.status_code} - {index_res.text}")
+
+                except Exception as e:
+                    print(f"Error processing resume file {key}: {e}")
+                    import traceback
+                    traceback.print_exc()
+
+        return response(200, {
+            "message": f"Processed S3 events successfully",
+            "jobs_processed": jobs_processed,
+            "resumes_processed": resumes_processed
+        })
 
     # =====================================================
     return response(400, {"error": "Unknown event"})
