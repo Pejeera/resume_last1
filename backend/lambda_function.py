@@ -1477,6 +1477,8 @@ def lambda_handler(event, context):
                 job_title = job_data.get("title", "")
                 job_description = job_data.get("description", job_data.get("text_excerpt", ""))
                 job_location = job_data.get("metadata", {}).get("location", "")
+                # Get scoring_weights from job (could be in root or metadata)
+                scoring_weights = job_data.get("scoring_weights") or job_data.get("metadata", {}).get("scoring_weights", {})
                 
                 if not job_description:
                     return response(400, {"error": "Job has no description"})
@@ -1852,13 +1854,29 @@ def lambda_handler(event, context):
                         for i, c in enumerate(candidates)
                     ])
                     
+                    # Build scoring weights section for prompt (if available)
+                    scoring_weights_section = ""
+                    if scoring_weights and isinstance(scoring_weights, dict) and len(scoring_weights) > 0:
+                        weights_list = []
+                        for category, weight in scoring_weights.items():
+                            weights_list.append(f"  - **{category}**: {weight}%")
+                        scoring_weights_section = f"""
+**น้ำหนักการให้คะแนน (Scoring Weights) - ต้องใช้ตามนี้:**
+{chr(10).join(weights_list)}
+
+**สำคัญมาก:** ในการจัดอันดับและให้คะแนน rerank_score คุณต้องพิจารณาตามน้ำหนักที่กำหนดไว้ข้างต้น:
+  - หมวดหมู่ที่มีน้ำหนักสูง (เช่น {max(scoring_weights.items(), key=lambda x: x[1])[0]} {max(scoring_weights.values())}%) ต้องให้ความสำคัญมากกว่า
+  - หมวดหมู่ที่มีน้ำหนักต่ำ (เช่น {min(scoring_weights.items(), key=lambda x: x[1])[0]} {min(scoring_weights.values())}%) ให้ความสำคัญน้อยกว่า
+  - คะแนน rerank_score ต้องสะท้อนถึงน้ำหนักที่กำหนดไว้
+"""
+                    
                     rerank_prompt = f"""คุณเป็น AI ที่เชี่ยวชาญในการจับคู่ Resume กับ Job
 
 **ตำแหน่งงาน:** {job_title_display}
 **สถานที่:** {job_location_display}
 **Job Description:**
 {job_summary}
-
+{scoring_weights_section}
 **รายการ Resume (Candidates):**
 {candidates_text}
 
@@ -1867,6 +1885,7 @@ def lambda_handler(event, context):
    - **ตำแหน่งงาน (Job Title)**: Resume ต้องเหมาะสมกับตำแหน่งงาน "{job_title_display}" นี้
    - **สถานที่ (Location)**: พิจารณาความเหมาะสมกับสถานที่ "{job_location_display}" (ถ้า Resume มีข้อมูลสถานที่)
    - **Job Description**: ทักษะและประสบการณ์ที่ตรงกับ Job Description
+   {f"- **น้ำหนักการให้คะแนน**: ใช้ตามน้ำหนักที่กำหนดไว้ข้างต้น - หมวดหมู่ที่มีน้ำหนักสูงต้องให้ความสำคัญมากกว่า" if scoring_weights_section else ""}
 2. ให้เหตุผลที่ละเอียดและยาว (4-6 ประโยค) ว่าทำไมถึงเหมาะหรือไม่เหมาะกับตำแหน่งงานนี้ โดย**ต้องระบุอย่างชัดเจน**:
    - **ตำแหน่งงาน (Job Title)**: Resume นี้เหมาะสมกับตำแหน่ง "{job_title_display}" หรือไม่ อย่างไร - **ต้องระบุชื่อตำแหน่งงาน "{job_title_display}" ในเหตุผล**
    - **สถานที่ (Location)**: ความเหมาะสมกับสถานที่ "{job_location_display}" - **ต้องระบุสถานที่ "{job_location_display}" ในเหตุผล** (ถ้ามีข้อมูลใน Resume หรือ Job)

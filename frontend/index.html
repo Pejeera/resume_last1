@@ -461,6 +461,29 @@
                                 <small style="color: #666; font-size: 0.9em;">แต่ละบรรทัดจะเป็น 1 ข้อ</small>
                             </div>
                             
+                            <div class="form-group" style="margin-top: 30px; padding: 20px; background: #e3f2fd; border-radius: 8px; border: 2px solid #2196f3;">
+                                <label style="font-weight: 700; color: #1976d2; font-size: 1.1em;">⚖️ น้ำหนักการให้คะแนน (Scoring Weights) - สำหรับโหมด B</label>
+                                <small style="color: #666; font-size: 0.9em; display: block; margin-bottom: 15px;">
+                                    กำหนดน้ำหนักการให้คะแนนสำหรับแต่ละหมวดหมู่ (รวมกันต้องได้ 100%)<br>
+                                    สามารถเพิ่มได้สูงสุด 100 หมวดหมู่
+                                </small>
+                                
+                                <div id="scoringWeightsContainer" style="margin-top: 15px;">
+                                    <!-- Scoring weights จะถูกเพิ่มที่นี่ -->
+                                </div>
+                                
+                                <div style="margin-top: 15px;">
+                                    <button type="button" onclick="addScoringWeight()" class="btn" style="background: #2196f3; padding: 8px 20px; font-size: 0.9em; width: auto;">
+                                        ➕ เพิ่มหมวดหมู่
+                                    </button>
+                                </div>
+                                
+                                <div id="scoringWeightsTotal" style="margin-top: 15px; padding: 10px; background: white; border-radius: 5px; font-weight: 600;">
+                                    <span>รวมน้ำหนัก: </span><span id="totalWeight">0</span>%
+                                    <span id="weightStatus" style="margin-left: 10px;"></span>
+                                </div>
+                            </div>
+                            
                             <div style="display: flex; gap: 10px; margin-top: 20px;">
                                 <button type="submit" class="btn" style="background: #28a745; flex: 1;">💾 บันทึก</button>
                                 <button type="button" onclick="cancelEditJob()" class="btn" style="background: #6c757d; flex: 1;">❌ ยกเลิก</button>
@@ -1189,6 +1212,18 @@
                     content += `<div style="margin-top: 20px;"><strong>สรุป:</strong><div style="margin-top: 10px; padding: 15px; background: white; border-radius: 5px; color: #666;">${job.text_excerpt}</div></div>`;
                 }
                 
+                // Scoring Weights (if available)
+                const scoringWeights = job.scoring_weights || (job.metadata && job.metadata.scoring_weights);
+                if (scoringWeights && Object.keys(scoringWeights).length > 0) {
+                    content += `<div style="margin-top: 20px; padding: 15px; background: #e3f2fd; border-radius: 5px; border: 2px solid #2196f3;"><strong>⚖️ น้ำหนักการให้คะแนน (Scoring Weights):</strong><div style="margin-top: 10px;">`;
+                    for (const [category, weight] of Object.entries(scoringWeights)) {
+                        content += `<div style="display: flex; justify-content: space-between; padding: 5px 0; border-bottom: 1px solid #ddd;"><span>${category}:</span><span style="font-weight: 600;">${weight}%</span></div>`;
+                    }
+                    const total = Object.values(scoringWeights).reduce((sum, w) => sum + (parseFloat(w) || 0), 0);
+                    content += `<div style="display: flex; justify-content: space-between; padding: 5px 0; margin-top: 5px; font-weight: 700; border-top: 2px solid #2196f3;"><span>รวม:</span><span>${total.toFixed(2)}%</span></div>`;
+                    content += `</div></div>`;
+                }
+                
                 viewDiv.innerHTML = content;
                 detailsDiv.style.display = 'block';
                 
@@ -1233,6 +1268,9 @@
                 // Requirements (array to newline-separated string)
                 const requirements = currentEditingJob.requirements || (currentEditingJob.metadata && currentEditingJob.metadata.requirements) || [];
                 document.getElementById('editJobRequirements').value = Array.isArray(requirements) ? requirements.join('\n') : requirements;
+                
+                // Load scoring weights
+                loadScoringWeights();
             } else {
                 // Switch to view mode
                 viewDiv.style.display = 'block';
@@ -1272,6 +1310,17 @@
                 const requirementsText = document.getElementById('editJobRequirements').value;
                 const requirements = requirementsText ? requirementsText.split('\n').map(r => r.trim()).filter(r => r) : [];
                 
+                // Get scoring weights
+                const scoringWeights = getScoringWeights();
+                
+                // Validate scoring weights total
+                const totalWeight = Object.values(scoringWeights).reduce((sum, weight) => sum + (parseFloat(weight) || 0), 0);
+                if (Object.keys(scoringWeights).length > 0 && Math.abs(totalWeight - 100) > 0.01) {
+                    showError(`น้ำหนักการให้คะแนนรวมกันต้องได้ 100% (ปัจจุบัน: ${totalWeight.toFixed(2)}%)`);
+                    hideLoading();
+                    return;
+                }
+                
                 // Build updated job object
                 const updatedJob = {
                     id: jobId,
@@ -1286,6 +1335,7 @@
                     skills: skills,
                     responsibilities: responsibilities,
                     requirements: requirements,
+                    scoring_weights: Object.keys(scoringWeights).length > 0 ? scoringWeights : undefined,
                     metadata: {
                         location: location,
                         department: department,
@@ -1293,7 +1343,8 @@
                         experience_years: experienceYears,
                         skills: skills,
                         responsibilities: responsibilities,
-                        requirements: requirements
+                        requirements: requirements,
+                        scoring_weights: Object.keys(scoringWeights).length > 0 ? scoringWeights : undefined
                     },
                     created_at: currentEditingJob.created_at || new Date().toISOString()
                 };
@@ -1332,6 +1383,154 @@
             } finally {
                 hideLoading();
             }
+        }
+
+        // Scoring Weights Management Functions
+        let scoringWeightIndex = 0;
+
+        function addScoringWeight() {
+            const container = document.getElementById('scoringWeightsContainer');
+            const currentCount = container.children.length;
+            
+            if (currentCount >= 100) {
+                showError('สามารถเพิ่มได้สูงสุด 100 หมวดหมู่');
+                return;
+            }
+            
+            const weightDiv = document.createElement('div');
+            weightDiv.className = 'scoring-weight-item';
+            weightDiv.style.cssText = 'display: flex; gap: 10px; align-items: center; margin-bottom: 10px; padding: 10px; background: white; border-radius: 5px; border: 1px solid #ddd;';
+            weightDiv.setAttribute('data-index', scoringWeightIndex++);
+            
+            weightDiv.innerHTML = `
+                <input type="text" class="weight-category" placeholder="ชื่อหมวดหมู่ (เช่น ทักษะ, ประสบการณ์)" 
+                    style="flex: 2; padding: 8px; border: 2px solid #ddd; border-radius: 5px; font-size: 0.9em;"
+                    maxlength="100">
+                <input type="number" class="weight-value" placeholder="0" min="0" max="100" step="0.1"
+                    style="flex: 1; padding: 8px; border: 2px solid #ddd; border-radius: 5px; font-size: 0.9em;"
+                    oninput="updateScoringWeightsTotal()">
+                <span style="font-weight: 600; color: #666; min-width: 30px;">%</span>
+                <button type="button" onclick="removeScoringWeight(this)" class="btn" 
+                    style="background: #dc3545; padding: 8px 15px; font-size: 0.9em; width: auto;">
+                    ❌ ลบ
+                </button>
+            `;
+            
+            container.appendChild(weightDiv);
+            
+            // Add event listeners
+            const categoryInput = weightDiv.querySelector('.weight-category');
+            const valueInput = weightDiv.querySelector('.weight-value');
+            categoryInput.addEventListener('input', updateScoringWeightsTotal);
+            valueInput.addEventListener('input', updateScoringWeightsTotal);
+            
+            updateScoringWeightsTotal();
+        }
+
+        function removeScoringWeight(button) {
+            const container = document.getElementById('scoringWeightsContainer');
+            const weightDiv = button.closest('.scoring-weight-item');
+            if (weightDiv) {
+                weightDiv.remove();
+                updateScoringWeightsTotal();
+            }
+        }
+
+        function updateScoringWeightsTotal() {
+            const container = document.getElementById('scoringWeightsContainer');
+            const items = container.querySelectorAll('.scoring-weight-item');
+            let total = 0;
+            
+            items.forEach(item => {
+                const valueInput = item.querySelector('.weight-value');
+                const value = parseFloat(valueInput.value) || 0;
+                total += value;
+            });
+            
+            const totalElement = document.getElementById('totalWeight');
+            const statusElement = document.getElementById('weightStatus');
+            
+            totalElement.textContent = total.toFixed(2);
+            
+            if (items.length === 0) {
+                statusElement.textContent = '';
+                statusElement.style.color = '';
+            } else if (Math.abs(total - 100) < 0.01) {
+                statusElement.textContent = '✅ ถูกต้อง';
+                statusElement.style.color = '#28a745';
+            } else if (total > 100) {
+                statusElement.textContent = `⚠️ เกิน ${(total - 100).toFixed(2)}%`;
+                statusElement.style.color = '#dc3545';
+            } else {
+                statusElement.textContent = `⚠️ ขาด ${(100 - total).toFixed(2)}%`;
+                statusElement.style.color = '#ffc107';
+            }
+        }
+
+        function loadScoringWeights() {
+            const container = document.getElementById('scoringWeightsContainer');
+            container.innerHTML = '';
+            scoringWeightIndex = 0;
+            
+            const scoringWeights = currentEditingJob.scoring_weights || 
+                                  (currentEditingJob.metadata && currentEditingJob.metadata.scoring_weights) || {};
+            
+            if (Object.keys(scoringWeights).length === 0) {
+                // Add default examples
+                addScoringWeight();
+                addScoringWeight();
+            } else {
+                // Load existing weights
+                for (const [category, weight] of Object.entries(scoringWeights)) {
+                    const weightDiv = document.createElement('div');
+                    weightDiv.className = 'scoring-weight-item';
+                    weightDiv.style.cssText = 'display: flex; gap: 10px; align-items: center; margin-bottom: 10px; padding: 10px; background: white; border-radius: 5px; border: 1px solid #ddd;';
+                    weightDiv.setAttribute('data-index', scoringWeightIndex++);
+                    
+                    weightDiv.innerHTML = `
+                        <input type="text" class="weight-category" value="${category}" 
+                            style="flex: 2; padding: 8px; border: 2px solid #ddd; border-radius: 5px; font-size: 0.9em;"
+                            maxlength="100">
+                        <input type="number" class="weight-value" value="${weight}" min="0" max="100" step="0.1"
+                            style="flex: 1; padding: 8px; border: 2px solid #ddd; border-radius: 5px; font-size: 0.9em;"
+                            oninput="updateScoringWeightsTotal()">
+                        <span style="font-weight: 600; color: #666; min-width: 30px;">%</span>
+                        <button type="button" onclick="removeScoringWeight(this)" class="btn" 
+                            style="background: #dc3545; padding: 8px 15px; font-size: 0.9em; width: auto;">
+                            ❌ ลบ
+                        </button>
+                    `;
+                    
+                    container.appendChild(weightDiv);
+                    
+                    // Add event listeners
+                    const categoryInput = weightDiv.querySelector('.weight-category');
+                    const valueInput = weightDiv.querySelector('.weight-value');
+                    categoryInput.addEventListener('input', updateScoringWeightsTotal);
+                    valueInput.addEventListener('input', updateScoringWeightsTotal);
+                }
+            }
+            
+            updateScoringWeightsTotal();
+        }
+
+        function getScoringWeights() {
+            const container = document.getElementById('scoringWeightsContainer');
+            const items = container.querySelectorAll('.scoring-weight-item');
+            const weights = {};
+            
+            items.forEach(item => {
+                const categoryInput = item.querySelector('.weight-category');
+                const valueInput = item.querySelector('.weight-value');
+                const category = categoryInput.value.trim();
+                const value = parseFloat(valueInput.value) || 0;
+                
+                if (category && value > 0) {
+                    weights[category] = value;
+                }
+            });
+            
+            return weights;
         }
 
     </script>
