@@ -16,8 +16,8 @@ def get_lambda_env_vars():
     try:
         result = subprocess.run(
             ["aws", "lambda", "get-function-configuration",
-             "--function-name", "ResumeMatchAPI",
-             "--region", "us-east-1",
+             "--function-name", "resume-search-api",
+             "--region", "ap-southeast-2",
              "--query", "Environment.Variables",
              "--output", "json"],
             capture_output=True,

@@ -9,8 +9,8 @@ PS> .\deploy_lambda_docker.ps1
 #>
 
 param(
-    [string]$FunctionName = "ResumeMatchAPI",
-    [string]$Region = "us-east-1",
+    [string]$FunctionName = "resume-search-api",
+    [string]$Region = "ap-southeast-2",
     [string]$BuildDir = "package",
     [string]$ZipFile = "lambda.zip"
 )

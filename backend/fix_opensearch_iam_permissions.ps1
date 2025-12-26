@@ -1,7 +1,7 @@
 # Script to add OpenSearch permissions to Lambda IAM role
 param(
-    [string]$FunctionName = "ResumeMatchAPI",
-    [string]$Region = "us-east-1",
+    [string]$FunctionName = "resume-search-api",
+    [string]$Region = "ap-southeast-2",
     [string]$OpenSearchDomainArn = "arn:aws:es:ap-southeast-2:533267343789:domain/resume-search-dev"
 )
 
@@ -46,7 +46,7 @@ try {
 
 # Option 2: Create and attach custom policy
 Write-Host "[3/3] กำลังสร้าง custom policy (ถ้ายังไม่มี)..." -ForegroundColor Green
-$policyName = "ResumeMatchAPI-OpenSearch-Policy"
+$policyName = "resume-search-api-OpenSearch-Policy"
 
 try {
     # Check if policy exists

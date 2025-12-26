@@ -1,7 +1,7 @@
 # Script to remove Lambda from VPC (quick fix for network timeout)
 
-$FunctionName = "ResumeMatchAPI"
-$Region = "us-east-1"
+$FunctionName = "resume-search-api"
+$Region = "ap-southeast-2"
 
 Write-Host "==========================================" -ForegroundColor Cyan
 Write-Host "Remove Lambda from VPC" -ForegroundColor Cyan

@@ -1,7 +1,7 @@
 # อัปเดต Lambda environment variables สำหรับ Bedrock
 param(
-    [string]$FunctionName = "ResumeMatchAPI",
-    [string]$Region = "us-east-1",
+    [string]$FunctionName = "resume-search-api",
+    [string]$Region = "ap-southeast-2",
     [string]$BedrockRegion = "us-east-1",
     [string]$BedrockEmbeddingModel = "cohere.embed-multilingual-v3",
     [string]$BedrockRerankModel = "us.amazon.nova-lite-v1:0"

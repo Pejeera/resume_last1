@@ -20,9 +20,9 @@ param(
     [Parameter(Mandatory=$true)]
     [string]$S3BucketName,
     
-    [string]$FunctionName = "ResumeMatchAPI",
-    [string]$Region = "us-east-1",
-    [string]$AWSRegion = "us-east-1",
+    [string]$FunctionName = "resume-search-api",
+    [string]$Region = "ap-southeast-2",
+    [string]$AWSRegion = "ap-southeast-2",
     [string]$S3Prefix = "resumes/",
     [string]$OpenSearchUseSSL = "true",
     [string]$OpenSearchVerifyCerts = "false",

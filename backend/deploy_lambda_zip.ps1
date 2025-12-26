@@ -2,8 +2,8 @@
 # ใช้: .\deploy_lambda_zip.ps1
 
 param(
-    [string]$FunctionName = "ResumeMatchAPI",
-    [string]$Region = "us-east-1"
+    [string]$FunctionName = "resume-search-api",
+    [string]$Region = "ap-southeast-2"
 )
 
 Write-Host ("=" * 60) -ForegroundColor Cyan

@@ -996,6 +996,21 @@ def lambda_handler(event, context):
                 search_res = None
                 use_vector_search = False
                 
+                # Check if index exists
+                try:
+                    index_check_url = f"https://{OPENSEARCH_HOST}/{INDEX_NAME}"
+                    index_check_res = requests.head(index_check_url, auth=opensearch_auth, timeout=5)
+                    if index_check_res.status_code == 404:
+                        print(f"WARNING: OpenSearch index '{INDEX_NAME}' does not exist!")
+                        return response(200, {
+                            "resume_id": resume_key,
+                            "results": [],
+                            "total": 0,
+                            "message": f"ไม่พบ OpenSearch index '{INDEX_NAME}' - กรุณา sync jobs ก่อน (ใช้ API /api/jobs/sync)"
+                        })
+                except Exception as e:
+                    print(f"Warning: Could not check index existence: {e}")
+                
                 # Try vector search if embedding is available
                 if resume_embedding:
                     try:
@@ -1050,10 +1065,28 @@ def lambda_handler(event, context):
                     
                     if search_res.status_code != 200:
                         print(f"OpenSearch search error: {search_res.status_code} - {search_res.text}")
-                        return response(500, {"error": f"OpenSearch search error: {search_res.text}"})
+                        # If search fails, return empty results with helpful message
+                        error_msg = search_res.text
+                        if search_res.status_code == 404:
+                            error_msg = f"OpenSearch index '{INDEX_NAME}' not found - กรุณา sync jobs ก่อน"
+                        elif "index_not_found_exception" in error_msg.lower():
+                            error_msg = f"OpenSearch index '{INDEX_NAME}' not found - กรุณา sync jobs ก่อน"
+                        return response(200, {
+                            "resume_id": resume_key,
+                            "results": [],
+                            "total": 0,
+                            "message": f"เกิดข้อผิดพลาดในการค้นหา: {error_msg}"
+                        })
                 
                 # 5. Prepare candidates for reranking
-                hits = search_res.json().get("hits", {}).get("hits", [])
+                search_result_json = search_res.json()
+                total_hits = search_result_json.get("hits", {}).get("total", {})
+                if isinstance(total_hits, dict):
+                    total_count = total_hits.get("value", 0)
+                else:
+                    total_count = total_hits
+                hits = search_result_json.get("hits", {}).get("hits", [])
+                print(f"OpenSearch search returned {len(hits)} hits (total: {total_count}) from index '{INDEX_NAME}'")
                 all_candidates = []
                 # Normalize scores based on actual score range
                 all_scores = [hit.get("_score", 0.0) for hit in hits]
@@ -1091,6 +1124,45 @@ def lambda_handler(event, context):
                 all_candidates.sort(key=lambda x: x["vector_score"], reverse=True)
                 candidates = all_candidates[:3]  # Select Top 3 based on embedding score
                 print(f"Selected Top 3 candidates from {len(all_candidates)} total jobs based on embedding score")
+                
+                # Check if no jobs found
+                if len(all_candidates) == 0:
+                    print(f"WARNING: No jobs found in OpenSearch index '{INDEX_NAME}'. This could mean:")
+                    print(f"  1. No jobs have been indexed yet")
+                    print(f"  2. OpenSearch index '{INDEX_NAME}' doesn't exist")
+                    print(f"  3. Search query didn't match any jobs")
+                    print(f"  4. Total hits from search: {total_count}")
+                    
+                    # Try to get job count from index to provide better error message
+                    try:
+                        count_url = f"https://{OPENSEARCH_HOST}/{INDEX_NAME}/_count"
+                        count_res = requests.get(count_url, auth=opensearch_auth, timeout=5)
+                        if count_res.status_code == 200:
+                            job_count = count_res.json().get("count", 0)
+                            print(f"Total jobs in index '{INDEX_NAME}': {job_count}")
+                            if job_count == 0:
+                                return response(200, {
+                                    "resume_id": resume_key,
+                                    "results": [],
+                                    "total": 0,
+                                    "message": f"ไม่พบตำแหน่งงานในระบบ - ยังไม่มี jobs ใน OpenSearch index '{INDEX_NAME}' กรุณาอัปโหลด jobs หรือใช้ API /api/jobs/sync เพื่อ sync jobs จาก S3"
+                                })
+                            else:
+                                return response(200, {
+                                    "resume_id": resume_key,
+                                    "results": [],
+                                    "total": 0,
+                                    "message": f"ไม่พบตำแหน่งงานที่ตรงกับ Resume นี้ (มี {job_count} jobs ในระบบ แต่ไม่ตรงกับ Resume)"
+                                })
+                    except Exception as e:
+                        print(f"Could not get job count: {e}")
+                    
+                    return response(200, {
+                        "resume_id": resume_key,
+                        "results": [],
+                        "total": 0,
+                        "message": f"ไม่พบตำแหน่งงานในระบบ - กรุณาตรวจสอบว่า jobs ถูก index แล้วหรือยัง (ใช้ API /api/jobs/sync)"
+                    })
                 
                 # 6. Rerank with Nova Lite v1
                 results = []

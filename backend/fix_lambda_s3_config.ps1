@@ -2,8 +2,8 @@
 # ใช้: .\fix_lambda_s3_config.ps1
 
 param(
-    [string]$FunctionName = "resume-matching-api",
-    [string]$Region = "us-east-1",
+    [string]$FunctionName = "resume-search-api",
+    [string]$Region = "ap-southeast-2",
     [string]$S3BucketName = "resume-matching-533267343789",
     [string]$S3Prefix = "resumes/",
     [string]$UseMock = "false"

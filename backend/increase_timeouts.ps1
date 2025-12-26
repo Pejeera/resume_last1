@@ -1,7 +1,7 @@
 # Script to increase timeouts for Lambda and API Gateway
 
-$FunctionName = "ResumeMatchAPI"
-$Region = "us-east-1"
+$FunctionName = "resume-search-api"
+$Region = "ap-southeast-2"
 $ApiGatewayId = "k9z3rlu1ui"
 $StageName = "prod"
 

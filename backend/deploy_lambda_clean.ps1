@@ -14,8 +14,8 @@ PS> .\deploy_lambda_clean.ps1
 #>
 
 param(
-    [string]$FunctionName = "ResumeMatchAPI",
-    [string]$Region = "us-east-1",
+    [string]$FunctionName = "resume-search-api",
+    [string]$Region = "ap-southeast-2",
     [string]$BuildDir = "lambda-package",
     [string]$ZipFile = "lambda-deployment-clean.zip"
 )
