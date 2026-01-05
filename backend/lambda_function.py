@@ -520,14 +520,116 @@ def lambda_handler(event, context):
                 )
                 
                 print(f"Updated job {job_id} in S3: {found_s3_key}")
-                print(f"S3 event will trigger Lambda to update embedding in OpenSearch automatically")
                 
-                return response(200, {
-                    "message": f"Job {job_id} updated successfully in S3",
-                    "job_id": job_id,
-                    "s3_key": found_s3_key,
-                    "note": "S3 event will trigger automatic embedding update in OpenSearch"
-                })
+                # Prepare document for OpenSearch - normalize structure
+                document = {k: v for k, v in updated_job.items() if k != "_id"}
+                document["id"] = job_id
+                
+                # Build description from available fields if not present
+                if "description" not in document or not document.get("description"):
+                    desc_parts = []
+                    if document.get("title"):
+                        desc_parts.append(f"Title: {document.get('title')}")
+                    if document.get("skills"):
+                        desc_parts.append(f"Skills: {', '.join(document.get('skills', []))}")
+                    if document.get("responsibilities"):
+                        desc_parts.append(f"Responsibilities: {' '.join(document.get('responsibilities', []))}")
+                    if document.get("requirements"):
+                        desc_parts.append(f"Requirements: {' '.join(document.get('requirements', []))}")
+                    document["description"] = "\n".join(desc_parts) if desc_parts else ""
+                
+                # Create text_excerpt
+                if "text_excerpt" not in document:
+                    document["text_excerpt"] = document.get("description", "")[:500]
+                
+                # Create/update metadata object - ensure scoring_weights and all fields are included
+                if "metadata" not in document:
+                    document["metadata"] = {}
+                
+                # Update metadata with all relevant fields
+                metadata = document["metadata"]
+                for key in ["department", "location", "employment_type", "experience_years", "skills", "responsibilities", "requirements", "scoring_weights"]:
+                    if key in document:
+                        metadata[key] = document[key]
+                
+                # Ensure scoring_weights is in metadata if it exists in root
+                if "scoring_weights" in document and "scoring_weights" not in metadata:
+                    metadata["scoring_weights"] = document["scoring_weights"]
+                
+                document["metadata"] = metadata
+                
+                # ALWAYS generate new embedding (update when job changes)
+                embedding_generated = False
+                try:
+                    job_title = document.get('title', '')
+                    job_location = document.get('metadata', {}).get('location', '') if isinstance(document.get('metadata'), dict) else ''
+                    job_description = document.get('description', '')
+                    
+                    # Use helper function to extract important info (prioritizes title, location, key parts of description)
+                    full_text = extract_important_job_info(job_title, job_location, job_description, max_chars=2048)
+                    
+                    embedding_body = {
+                        "texts": [full_text],
+                        "input_type": "search_document"
+                    }
+                    embedding_response = bedrock_runtime.invoke_model(
+                        modelId=BEDROCK_EMBEDDING_MODEL,
+                        body=json.dumps(embedding_body)
+                    )
+                    embedding_result = json.loads(embedding_response["body"].read())
+                    document["embeddings"] = embedding_result.get("embeddings", [])[0]
+                    embedding_generated = True
+                    print(f"Generated new embedding for job {job_id} (dimension: {len(document['embeddings'])})")
+                except Exception as e:
+                    print(f"Warning: Failed to generate embedding for job {job_id}: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    # Continue without embedding if generation fails
+                
+                # Update OpenSearch immediately (don't wait for S3 event)
+                try:
+                    index_doc_url = f"https://{OPENSEARCH_HOST}/jobs_index/_doc/{job_id}"
+                    index_res = requests.put(
+                        index_doc_url,
+                        auth=opensearch_auth,
+                        headers={"Content-Type": "application/json"},
+                        json=document,
+                        timeout=10
+                    )
+                    
+                    if index_res.status_code in [200, 201]:
+                        print(f"Updated job {job_id} in OpenSearch with new embedding")
+                        return response(200, {
+                            "message": f"Job {job_id} updated successfully in S3 and OpenSearch",
+                            "job_id": job_id,
+                            "s3_key": found_s3_key,
+                            "opensearch_updated": True,
+                            "embedding_generated": embedding_generated,
+                            "note": "Job data and embedding updated immediately in OpenSearch"
+                        })
+                    else:
+                        print(f"Warning: Failed to update OpenSearch for job {job_id}: {index_res.status_code} - {index_res.text}")
+                        return response(200, {
+                            "message": f"Job {job_id} updated in S3, but OpenSearch update failed",
+                            "job_id": job_id,
+                            "s3_key": found_s3_key,
+                            "opensearch_updated": False,
+                            "opensearch_error": f"{index_res.status_code}: {index_res.text[:200]}",
+                            "note": "Job saved in S3. S3 event will trigger OpenSearch update automatically."
+                        })
+                except Exception as e:
+                    print(f"Error updating OpenSearch for job {job_id}: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    # Still return success for S3 update
+                    return response(200, {
+                        "message": f"Job {job_id} updated in S3, but OpenSearch update failed",
+                        "job_id": job_id,
+                        "s3_key": found_s3_key,
+                        "opensearch_updated": False,
+                        "opensearch_error": str(e),
+                        "note": "Job saved in S3. S3 event will trigger OpenSearch update automatically."
+                    })
                 
             except Exception as e:
                 print(f"Error updating job in S3: {str(e)}")
