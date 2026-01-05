@@ -1,1 +1,0 @@
-{"statusCode": 200, "headers": {"Content-Type": "application/json", "Access-Control-Allow-Origin": "*"}, "body": "{\"message\": \"Successfully synced 5 jobs from S3 to OpenSearch\", \"synced\": 5, \"skipped\": 0, \"total\": 5}"}
