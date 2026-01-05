@@ -26,7 +26,7 @@ def setup_logging():
     root_logger.addHandler(console_handler)
     
     # CloudWatch handler (only if not in mock mode and AWS credentials available)
-    if os.getenv("USE_MOCK", "true").lower() != "true":
+    if os.getenv("USE_MOCK", "false").lower() != "true":
         try:
             cloudwatch_handler = watchtower.CloudWatchLogHandler(
                 log_group_name="/aws/lambda/resume-matching-api",

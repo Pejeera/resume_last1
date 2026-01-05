@@ -15,7 +15,7 @@ rm -rf build package.zip
 echo "📁 Creating build directory..."
 mkdir build
 
-# ติดตั้ง dependency แบบ Lambda-compatible
+# ติดตั้ง dependency แบบ Lambda-compatibl\6=-
 echo "📥 Installing dependencies..."
 pip install -r requirements.txt -t build/
 

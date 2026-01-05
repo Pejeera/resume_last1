@@ -425,7 +425,7 @@ def lambda_handler(event, context):
                 return response(500, {"error": str(e)})
 
         # ---- update job in S3 (will trigger S3 event → auto update embedding in OpenSearch) ----
-        if path.startswith("/api/jobs/") and path != "/api/jobs/list" and method in ["PUT", "POST"]:
+        if path.startswith("/api/jobs/") and path != "/api/jobs/list" and path != "/api/jobs/search_by_resume" and path != "/api/jobs/sync_from_s3" and method in ["PUT", "POST"]:
             try:
                 # Extract job_id from path (e.g., /api/jobs/job123)
                 job_id = path.split("/api/jobs/")[-1]
@@ -986,9 +986,11 @@ def lambda_handler(event, context):
                     embedding_result = json.loads(embedding_response["body"].read())
                     resume_embedding = embedding_result.get("embeddings", [])[0]
                     print(f"Generated embedding successfully (dimension: {len(resume_embedding)})")
+                    print(f"DEBUG Mode A: resume_embedding created, will use vector search")
                 except Exception as e:
                     print(f"Warning: Could not generate embedding: {str(e)}")
                     print("Will use text-based search instead")
+                    print(f"DEBUG Mode A: No embedding, will use text search with resume_text length: {len(resume_text)}")
                     resume_embedding = None
                 
                 # 4. Search in OpenSearch (vector search if available, otherwise text search)
@@ -1037,8 +1039,10 @@ def lambda_handler(event, context):
                         if search_res.status_code == 200:
                             use_vector_search = True
                             print("Using vector search")
+                            print(f"DEBUG Mode A: Vector search successful, status_code={search_res.status_code}")
                         else:
                             print(f"Vector search failed ({search_res.status_code}), trying text search...")
+                            print(f"DEBUG Mode A: Vector search failed, response: {search_res.text[:500] if hasattr(search_res, 'text') else 'No response text'}")
                     except Exception as e:
                         print(f"Vector search error: {str(e)}, trying text search...")
                 
@@ -1087,6 +1091,13 @@ def lambda_handler(event, context):
                     total_count = total_hits
                 hits = search_result_json.get("hits", {}).get("hits", [])
                 print(f"OpenSearch search returned {len(hits)} hits (total: {total_count}) from index '{INDEX_NAME}'")
+                print(f"DEBUG Mode A: search_res.status_code = {search_res.status_code if search_res else 'None'}")
+                print(f"DEBUG Mode A: total_count = {total_count}, len(hits) = {len(hits)}")
+                if len(hits) > 0:
+                    print(f"DEBUG Mode A: First hit _id = {hits[0].get('_id')}, _score = {hits[0].get('_score')}, title = {hits[0].get('_source', {}).get('title', 'N/A')}")
+                else:
+                    print(f"DEBUG Mode A: ⚠️ No hits found! This means OpenSearch search succeeded but found no matching jobs.")
+                    print(f"DEBUG Mode A: Search query type = {'vector (KNN)' if use_vector_search else 'text (multi_match)'}")
                 all_candidates = []
                 # Normalize scores based on actual score range
                 all_scores = [hit.get("_score", 0.0) for hit in hits]
@@ -1122,6 +1133,9 @@ def lambda_handler(event, context):
                 
                 # Sort by embedding score and select Top 3
                 all_candidates.sort(key=lambda x: x["vector_score"], reverse=True)
+                print(f"DEBUG Mode A: Processed {len(all_candidates)} candidates from {len(hits)} hits")
+                if len(all_candidates) > 0:
+                    print(f"DEBUG Mode A: Top candidate: job_id={all_candidates[0].get('job_id')}, title={all_candidates[0].get('title')}, score={all_candidates[0].get('vector_score'):.2f}%")
                 candidates = all_candidates[:3]  # Select Top 3 based on embedding score
                 print(f"Selected Top 3 candidates from {len(all_candidates)} total jobs based on embedding score")
                 
@@ -1166,6 +1180,7 @@ def lambda_handler(event, context):
                 
                 # 6. Rerank with Nova Lite v1
                 results = []
+                print(f"DEBUG Mode A: About to rerank {len(candidates)} candidates")
                 try:
                     print(f"Attempting reranking with Nova Lite ({BEDROCK_RERANK_MODEL})...")
                     
@@ -1501,6 +1516,12 @@ def lambda_handler(event, context):
                             "reasons": f"{'Vector similarity' if use_vector_search else 'Text match'} score: {candidate['raw_score']:.4f}",
                             "match_reason": f"{'Vector similarity' if use_vector_search else 'Text match'} score: {candidate['raw_score']:.4f}"
                         })
+                
+                print(f"DEBUG Mode A: Final results count = {len(results)}")
+                if len(results) > 0:
+                    print(f"DEBUG Mode A: First result: job_id={results[0].get('job_id')}, title={results[0].get('job_title')}, rerank_score={results[0].get('rerank_score')}")
+                else:
+                    print(f"DEBUG Mode A: ⚠️ No results to return! candidates={len(candidates)}, all_candidates={len(all_candidates)}")
                 
                 return response(200, {
                     "resume_id": resume_key,
