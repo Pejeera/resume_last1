@@ -520,10 +520,13 @@
             region: 'ap-southeast-2'
         };
         
-        // API Base URL - ใช้ API Gateway สำหรับ production หรือ localhost สำหรับ development
-        const API_BASE_URL = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
-            ? 'http://localhost:8000/api'
-            : 'https://tm0ch5vc2e.execute-api.ap-southeast-2.amazonaws.com/api';
+        // API Base URL
+        // เดิม: ถ้า hostname เป็น localhost จะเรียกไปที่ backend localhost:8000
+        // แต่ตอนนี้เราใช้ backend ที่รันบน AWS API Gateway เสมอ
+        // และ login/token ก็ทำงานกับ API Gateway แล้ว
+        // ดังนั้นเพื่อเลี่ยง error "Failed to fetch" (กรณีไม่มี backend local)
+        // ให้ชี้ไปที่ API Gateway ตลอดไป
+        const API_BASE_URL = 'https://tm0ch5vc2e.execute-api.ap-southeast-2.amazonaws.com/api';
         
         // Token storage
         const TOKEN_KEY = 'cognito_id_token';
@@ -666,11 +669,32 @@
         const originalFetch = window.fetch;
         window.fetch = function(url, options = {}) {
             // Only add token for API requests
-            if (url.includes(API_BASE_URL) || url.startsWith('/api/')) {
+            const urlString = typeof url === 'string' ? url : url.url || '';
+            const isApiRequest = urlString.includes('tm0ch5vc2e.execute-api') || 
+                                urlString.includes(API_BASE_URL) || 
+                                urlString.startsWith('/api/');
+            
+            if (isApiRequest) {
                 const token = getToken();
+                console.log(`[Fetch Interceptor] URL: ${urlString}`);
+                console.log(`[Fetch Interceptor] Token exists: ${!!token}`);
+                
                 if (token) {
+                    options = options || {};
                     options.headers = options.headers || {};
-                    options.headers['Authorization'] = `Bearer ${token}`;
+                    // Convert headers to object if it's Headers instance
+                    if (options.headers instanceof Headers) {
+                        options.headers.set('Authorization', `Bearer ${token}`);
+                        console.log(`[Fetch Interceptor] Added Authorization header (Headers instance)`);
+                    } else if (typeof options.headers === 'object') {
+                        options.headers['Authorization'] = `Bearer ${token}`;
+                        console.log(`[Fetch Interceptor] Added Authorization header (object)`);
+                    } else {
+                        options.headers = { 'Authorization': `Bearer ${token}` };
+                        console.log(`[Fetch Interceptor] Added Authorization header (new object)`);
+                    }
+                } else {
+                    console.warn(`[Fetch Interceptor] No token found for API request: ${urlString}`);
                 }
             }
             return originalFetch(url, options);
@@ -711,7 +735,16 @@
                 statusEl.textContent = 'กำลังโหลด jobs...';
                 // Add cache-busting parameter to prevent browser cache
                 const cacheBuster = `?t=${Date.now()}`;
-                const response = await fetch(`${API_BASE_URL}/jobs/list${cacheBuster}`);
+                const token = getToken();
+                const headers = {
+                    'Content-Type': 'application/json'
+                };
+                if (token) {
+                    headers['Authorization'] = `Bearer ${token}`;
+                }
+                const response = await fetch(`${API_BASE_URL}/jobs/list${cacheBuster}`, {
+                    headers: headers
+                });
                 
                 if (response.ok) {
                     const data = await response.json();
@@ -771,7 +804,22 @@
                 if (statusA) statusA.textContent = 'กำลังโหลด resumes...';
                 if (statusB) statusB.textContent = 'กำลังโหลด resumes...';
                 
-                const response = await fetch(`${API_BASE_URL}/resumes/list`);
+                const token = getToken();
+                console.log(`[loadResumesList] Token exists: ${!!token}, Token length: ${token ? token.length : 0}`);
+                const headers = {
+                    'Content-Type': 'application/json'
+                };
+                if (token) {
+                    headers['Authorization'] = `Bearer ${token}`;
+                    console.log(`[loadResumesList] Added Authorization header`);
+                } else {
+                    console.warn(`[loadResumesList] No token found!`);
+                }
+                console.log(`[loadResumesList] Fetching: ${API_BASE_URL}/resumes/list`);
+                const response = await fetch(`${API_BASE_URL}/resumes/list`, {
+                    headers: headers
+                });
+                console.log(`[loadResumesList] Response status: ${response.status}`);
                 
                 if (response.ok) {
                     const data = await response.json();
@@ -969,7 +1017,13 @@
                 const formData = new FormData();
                 formData.append('file', file);
 
+                const token = getToken();
+                const uploadHeaders = {};
+                if (token) {
+                    uploadHeaders['Authorization'] = `Bearer ${token}`;
+                }
                 const uploadResponse = await fetch(`${API_BASE_URL}/resumes/upload_to_s3`, {
+                    headers: uploadHeaders,
                     method: 'POST',
                     body: formData
                 });
@@ -1025,11 +1079,16 @@
             try {
                 // Search jobs (will fetch resume from S3 and process if needed)
                 // Use resume_key (S3 key) instead of resume_id
+                const token = getToken();
+                const headers = {
+                    'Content-Type': 'application/json'
+                };
+                if (token) {
+                    headers['Authorization'] = `Bearer ${token}`;
+                }
                 const searchResponse = await fetch(`${API_BASE_URL}/jobs/search_by_resume`, {
                     method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
+                    headers: headers,
                     body: JSON.stringify({ 
                         resume_key: selectedResumeId,
                         resume_id: selectedResumeId  // Backward compatibility
@@ -1088,11 +1147,16 @@
             try {
                 // Search resumes by job using selected resume keys (S3 keys) from S3
                 // Note: This will process resumes from S3 if needed
+                const token = getToken();
+                const headers = {
+                    'Content-Type': 'application/json'
+                };
+                if (token) {
+                    headers['Authorization'] = `Bearer ${token}`;
+                }
                 const searchResponse = await fetch(`${API_BASE_URL}/resumes/search_by_job?job_id=${encodeURIComponent(selectedJobId)}`, {
                     method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
+                    headers: headers,
                     body: JSON.stringify({ 
                         resume_keys: selectedResumeIds,
                         resume_ids: selectedResumeIds  // Backward compatibility
@@ -1267,7 +1331,16 @@
             try {
                 statusEl.textContent = 'กำลังโหลด jobs...';
                 const cacheBuster = `?t=${Date.now()}`;
-                const response = await fetch(`${API_BASE_URL}/jobs/list${cacheBuster}`);
+                const token = getToken();
+                const headers = {
+                    'Content-Type': 'application/json'
+                };
+                if (token) {
+                    headers['Authorization'] = `Bearer ${token}`;
+                }
+                const response = await fetch(`${API_BASE_URL}/jobs/list${cacheBuster}`, {
+                    headers: headers
+                });
                 
                 if (response.ok) {
                     const data = await response.json();
