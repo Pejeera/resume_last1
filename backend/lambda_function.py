@@ -193,6 +193,22 @@ def lambda_handler(event, context):
     print("EVENT:", json.dumps(event))
 
     # =====================================================
+    # Extract user from API Gateway JWT Authorizer (if available)
+    # API Gateway already verified JWT, so we don't verify again
+    # =====================================================
+    user_claims = None
+    try:
+        request_context = event.get("requestContext", {})
+        authorizer = request_context.get("authorizer", {})
+        jwt_data = authorizer.get("jwt", {})
+        if jwt_data:
+            user_claims = jwt_data.get("claims", {})
+            if user_claims:
+                print(f"User authenticated via API Gateway: {user_claims.get('email', user_claims.get('sub', 'unknown'))}")
+    except Exception as e:
+        print(f"Note: Could not extract user claims (may not be using JWT Authorizer): {e}")
+
+    # =====================================================
     # 1) HTTP API
     # =====================================================
     if "requestContext" in event:
