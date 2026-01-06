@@ -510,19 +510,197 @@
     </div>
 
     <script>
+        // ==========================================
+        // Authentication Configuration
+        // ==========================================
+        const COGNITO_CONFIG = {
+            userPoolId: 'ap-southeast-2_bKxx54EbY',
+            clientId: '14keq2t7pc87ncl3i26rrf5vec',
+            clientSecret: 'jjlm1l5lg2fvb2na0i2kuv75edgv8fvbskc8dq34abv5362tmdl',
+            region: 'ap-southeast-2'
+        };
+        
         // API Base URL - ใช้ API Gateway สำหรับ production หรือ localhost สำหรับ development
         const API_BASE_URL = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
             ? 'http://localhost:8000/api'
             : 'https://tm0ch5vc2e.execute-api.ap-southeast-2.amazonaws.com/api';
+        
+        // Token storage
+        const TOKEN_KEY = 'cognito_id_token';
+        const USER_KEY = 'cognito_user';
+        
         let currentResults = null;
         let currentMode = 'modeA';
         let availableJobs = [];
         let availableResumes = [];
-
-        // Load jobs list on page load
-        window.addEventListener('DOMContentLoaded', async () => {
-            await loadJobsList();
-            await loadJobsListForViewer();
+        
+        // ==========================================
+        // Authentication Functions
+        // ==========================================
+        
+        // Check if user is logged in
+        function isLoggedIn() {
+            return !!localStorage.getItem(TOKEN_KEY);
+        }
+        
+        // Get stored token
+        function getToken() {
+            return localStorage.getItem(TOKEN_KEY);
+        }
+        
+        // Store token
+        function setToken(token, user) {
+            localStorage.setItem(TOKEN_KEY, token);
+            if (user) {
+                localStorage.setItem(USER_KEY, JSON.stringify(user));
+            }
+        }
+        
+        // Clear token (logout)
+        function clearToken() {
+            localStorage.removeItem(TOKEN_KEY);
+            localStorage.removeItem(USER_KEY);
+        }
+        
+        // Get current user
+        function getCurrentUser() {
+            const userStr = localStorage.getItem(USER_KEY);
+            return userStr ? JSON.parse(userStr) : null;
+        }
+        
+        // Login function
+        async function login(username, password) {
+            try {
+                // Call backend login endpoint
+                const response = await fetch(`${API_BASE_URL}/auth/login`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        username: username,
+                        password: password
+                    })
+                });
+                
+                if (!response.ok) {
+                    const error = await response.json().catch(() => ({ error: 'Login failed' }));
+                    throw new Error(error.error || error.message || 'Login failed');
+                }
+                
+                const data = await response.json();
+                setToken(data.idToken, { username, email: data.email || username });
+                return data;
+                
+            } catch (error) {
+                console.error('Login error:', error);
+                throw error;
+            }
+        }
+        
+        // Alternative: Direct Cognito login using AWS SDK
+        // We'll create a simple login page that uses AWS Cognito Hosted UI or direct API
+        // For now, let's create a login form that calls a backend endpoint
+        
+        // Show login page
+        function showLoginPage() {
+            document.body.innerHTML = `
+                <div style="min-height: 100vh; display: flex; align-items: center; justify-content: center; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);">
+                    <div style="background: white; padding: 40px; border-radius: 20px; box-shadow: 0 20px 60px rgba(0,0,0,0.3); max-width: 400px; width: 100%; margin: 20px;">
+                        <h1 style="text-align: center; color: #667eea; margin-bottom: 30px;">🔐 Login</h1>
+                        <div id="loginError" style="display: none; background: #fee; color: #c33; padding: 15px; border-radius: 8px; margin-bottom: 20px; border-left: 4px solid #c33;"></div>
+                        <form id="loginForm" onsubmit="handleLogin(event)">
+                            <div style="margin-bottom: 20px;">
+                                <label style="display: block; margin-bottom: 8px; font-weight: 600; color: #333;">Email</label>
+                                <input type="email" id="loginEmail" required 
+                                    style="width: 100%; padding: 12px; border: 2px solid #ddd; border-radius: 8px; font-size: 1em;"
+                                    placeholder="your@email.com">
+                            </div>
+                            <div style="margin-bottom: 20px;">
+                                <label style="display: block; margin-bottom: 8px; font-weight: 600; color: #333;">Password</label>
+                                <input type="password" id="loginPassword" required 
+                                    style="width: 100%; padding: 12px; border: 2px solid #ddd; border-radius: 8px; font-size: 1em;"
+                                    placeholder="••••••••">
+                            </div>
+                            <button type="submit" id="loginBtn" 
+                                style="width: 100%; padding: 15px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border: none; border-radius: 8px; font-size: 1.1em; font-weight: 600; cursor: pointer; transition: transform 0.2s;">
+                                Login
+                            </button>
+                        </form>
+                    </div>
+                </div>
+            `;
+        }
+        
+        // Handle login form submission
+        async function handleLogin(event) {
+            event.preventDefault();
+            const errorDiv = document.getElementById('loginError');
+            const loginBtn = document.getElementById('loginBtn');
+            const email = document.getElementById('loginEmail').value;
+            const password = document.getElementById('loginPassword').value;
+            
+            errorDiv.style.display = 'none';
+            loginBtn.disabled = true;
+            loginBtn.textContent = 'Logging in...';
+            
+            try {
+                await login(email, password);
+                // Reload page to show main app
+                window.location.reload();
+            } catch (error) {
+                errorDiv.textContent = error.message || 'Login failed. Please check your credentials.';
+                errorDiv.style.display = 'block';
+                loginBtn.disabled = false;
+                loginBtn.textContent = 'Login';
+            }
+        }
+        
+        // Logout function
+        function logout() {
+            clearToken();
+            showLoginPage();
+        }
+        
+        // Add Authorization header to fetch requests
+        const originalFetch = window.fetch;
+        window.fetch = function(url, options = {}) {
+            // Only add token for API requests
+            if (url.includes(API_BASE_URL) || url.startsWith('/api/')) {
+                const token = getToken();
+                if (token) {
+                    options.headers = options.headers || {};
+                    options.headers['Authorization'] = `Bearer ${token}`;
+                }
+            }
+            return originalFetch(url, options);
+        };
+        
+        // Check authentication on page load
+        window.addEventListener('DOMContentLoaded', () => {
+            if (!isLoggedIn()) {
+                showLoginPage();
+            } else {
+                // Add logout button to header
+                const header = document.querySelector('.header');
+                if (header) {
+                    const user = getCurrentUser();
+                    const logoutDiv = document.createElement('div');
+                    logoutDiv.style.cssText = 'position: absolute; top: 20px; right: 20px;';
+                    logoutDiv.innerHTML = `
+                        <span style="margin-right: 15px; opacity: 0.9;">👤 ${user?.email || user?.username || 'User'}</span>
+                        <button onclick="logout()" style="padding: 8px 20px; background: rgba(255,255,255,0.2); color: white; border: 2px solid white; border-radius: 5px; cursor: pointer; font-weight: 600;">
+                            Logout
+                        </button>
+                    `;
+                    header.style.position = 'relative';
+                    header.appendChild(logoutDiv);
+                }
+                
+                // Load initial data only if logged in
+                loadJobsList();
+                loadJobsListForViewer();
+            }
         });
 
         async function loadJobsList() {

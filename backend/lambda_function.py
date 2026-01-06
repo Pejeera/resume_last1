@@ -231,9 +231,93 @@ def lambda_handler(event, context):
                 "body": ""
             }
 
+        # ---- root endpoint ----
+        if path == "/":
+            return response(200, {
+                "message": "Resume Matching API is running",
+                "version": "1.0.0"
+            })
+        
         # ---- health ----
         if path == "/api/health":
             return response(200, {"status": "ok"})
+        
+        # ---- login endpoint (for frontend authentication) ----
+        if path == "/api/auth/login" and method == "POST":
+            try:
+                import hmac
+                import hashlib
+                import base64
+                
+                body = json.loads(event.get("body", "{}"))
+                username = body.get("username", "")
+                password = body.get("password", "")
+                
+                if not username or not password:
+                    return response(400, {"error": "Username and password are required"})
+                
+                # Cognito configuration
+                COGNITO_USER_POOL_ID = "ap-southeast-2_bKxx54EbY"
+                COGNITO_CLIENT_ID = "14keq2t7pc87ncl3i26rrf5vec"
+                COGNITO_CLIENT_SECRET = "jjlm1l5lg2fvb2na0i2kuv75edgv8fvbskc8dq34abv5362tmdl"
+                COGNITO_REGION = "ap-southeast-2"
+                
+                # Calculate SECRET_HASH
+                message = username + COGNITO_CLIENT_ID
+                secret_hash = base64.b64encode(
+                    hmac.new(
+                        COGNITO_CLIENT_SECRET.encode('utf-8'),
+                        message.encode('utf-8'),
+                        hashlib.sha256
+                    ).digest()
+                ).decode('utf-8')
+                
+                # Call Cognito
+                cognito_client = boto3.client('cognito-idp', region_name=COGNITO_REGION)
+                
+                try:
+                    auth_response = cognito_client.initiate_auth(
+                        AuthFlow='USER_PASSWORD_AUTH',
+                        ClientId=COGNITO_CLIENT_ID,
+                        AuthParameters={
+                            'USERNAME': username,
+                            'PASSWORD': password,
+                            'SECRET_HASH': secret_hash
+                        }
+                    )
+                    
+                    if auth_response.get('AuthenticationResult'):
+                        result = auth_response['AuthenticationResult']
+                        return response(200, {
+                            "idToken": result.get('IdToken'),
+                            "accessToken": result.get('AccessToken'),
+                            "refreshToken": result.get('RefreshToken'),
+                            "email": username  # Can extract from token if needed
+                        })
+                    else:
+                        return response(401, {"error": "Authentication failed"})
+                        
+                except Exception as e:
+                    error_code = ''
+                    try:
+                        if hasattr(e, 'response') and 'Error' in e.response:
+                            error_code = e.response['Error'].get('Code', '')
+                    except:
+                        pass
+                    
+                    if 'NotAuthorizedException' in str(type(e)) or error_code == 'NotAuthorizedException':
+                        return response(401, {"error": "Invalid username or password"})
+                    elif 'UserNotConfirmedException' in str(type(e)) or error_code == 'UserNotConfirmedException':
+                        return response(403, {"error": "User account is not confirmed"})
+                    else:
+                        print(f"Login error: {str(e)}")
+                        return response(401, {"error": f"Authentication failed: {str(e)}"})
+                    
+            except Exception as e:
+                print(f"Login error: {str(e)}")
+                import traceback
+                traceback.print_exc()
+                return response(500, {"error": f"Login failed: {str(e)}"})
 
         # ---- list jobs from S3 directory: resumes/jobs/ ----
         if (path == "/api/jobs" or path == "/api/jobs/list") and method == "GET":
