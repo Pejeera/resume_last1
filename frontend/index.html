@@ -676,25 +676,17 @@
             
             if (isApiRequest) {
                 const token = getToken();
-                console.log(`[Fetch Interceptor] URL: ${urlString}`);
-                console.log(`[Fetch Interceptor] Token exists: ${!!token}`);
-                
                 if (token) {
                     options = options || {};
                     options.headers = options.headers || {};
                     // Convert headers to object if it's Headers instance
                     if (options.headers instanceof Headers) {
                         options.headers.set('Authorization', `Bearer ${token}`);
-                        console.log(`[Fetch Interceptor] Added Authorization header (Headers instance)`);
                     } else if (typeof options.headers === 'object') {
                         options.headers['Authorization'] = `Bearer ${token}`;
-                        console.log(`[Fetch Interceptor] Added Authorization header (object)`);
                     } else {
                         options.headers = { 'Authorization': `Bearer ${token}` };
-                        console.log(`[Fetch Interceptor] Added Authorization header (new object)`);
                     }
-                } else {
-                    console.warn(`[Fetch Interceptor] No token found for API request: ${urlString}`);
                 }
             }
             return originalFetch(url, options);
@@ -805,21 +797,15 @@
                 if (statusB) statusB.textContent = 'กำลังโหลด resumes...';
                 
                 const token = getToken();
-                console.log(`[loadResumesList] Token exists: ${!!token}, Token length: ${token ? token.length : 0}`);
                 const headers = {
                     'Content-Type': 'application/json'
                 };
                 if (token) {
                     headers['Authorization'] = `Bearer ${token}`;
-                    console.log(`[loadResumesList] Added Authorization header`);
-                } else {
-                    console.warn(`[loadResumesList] No token found!`);
                 }
-                console.log(`[loadResumesList] Fetching: ${API_BASE_URL}/resumes/list`);
                 const response = await fetch(`${API_BASE_URL}/resumes/list`, {
                     headers: headers
                 });
-                console.log(`[loadResumesList] Response status: ${response.status}`);
                 
                 if (response.ok) {
                     const data = await response.json();
@@ -1170,9 +1156,6 @@
                 }
 
                 const searchResult = await searchResponse.json();
-                console.log('Mode B API Response:', searchResult); // Debug: ดู API response
-                console.log('Mode B Results:', searchResult.results); // Debug: ดู results
-                console.log('Mode B Results Length:', searchResult.results?.length); // Debug: ดูจำนวน results
                 
                 displayResultsModeB(searchResult);
                 currentResults = searchResult;
@@ -1259,9 +1242,6 @@
             const resultsDiv = document.getElementById('resultsContent');
             const results = data.results || [];
             
-            console.log('displayResultsModeB - Full data:', data);
-            console.log('displayResultsModeB - Results:', results);
-            console.log('displayResultsModeB - Results length:', results.length);
 
             if (results.length === 0) {
                 let message = '<p>ไม่พบ Resume ที่เหมาะสม</p>';
