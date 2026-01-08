@@ -587,8 +587,15 @@
                 });
                 
                 if (!response.ok) {
-                    const error = await response.json().catch(() => ({ error: 'Login failed' }));
-                    throw new Error(error.error || error.message || 'Login failed');
+                    let errorMessage = 'Login failed';
+                    try {
+                        const error = await response.json();
+                        errorMessage = error.detail || error.error || error.message || errorMessage;
+                    } catch (e) {
+                        // If response is not JSON, use status text
+                        errorMessage = response.statusText || errorMessage;
+                    }
+                    throw new Error(errorMessage);
                 }
                 
                 const data = await response.json();
@@ -597,6 +604,19 @@
                 
             } catch (error) {
                 console.error('Login error:', error);
+                console.error('Current origin:', window.location.origin);
+                console.error('API URL:', `${API_BASE_URL}/auth/login`);
+                // Handle network/CORS errors
+                if (error.message === 'Failed to fetch' || error.name === 'TypeError') {
+                    const origin = window.location.origin;
+                    let errorMsg = 'ไม่สามารถเชื่อมต่อกับ API Server ได้';
+                    if (origin === 'null' || origin.startsWith('file://')) {
+                        errorMsg += '\n\n⚠️ Frontend เปิดจาก file:// ซึ่ง browser block CORS request\nกรุณาใช้ local web server แทน:\n- Python: python -m http.server 8000\n- หรือใช้ VS Code Live Server';
+                    } else {
+                        errorMsg += `\n\nOrigin: ${origin}\nกรุณาตรวจสอบว่า CORS บน API Gateway รองรับ origin นี้แล้ว`;
+                    }
+                    throw new Error(errorMsg);
+                }
                 throw error;
             }
         }
@@ -652,7 +672,17 @@
                 // Reload page to show main app
                 window.location.reload();
             } catch (error) {
-                errorDiv.textContent = error.message || 'Login failed. Please check your credentials.';
+                // Show detailed error message
+                let errorMessage = error.message || 'Login failed. Please check your credentials.';
+                // Translate common errors to Thai
+                if (errorMessage.includes('ไม่สามารถเชื่อมต่อ')) {
+                    errorMessage = '❌ ' + errorMessage.replace(/\n/g, '<br>');
+                } else if (errorMessage.includes('Username หรือ password')) {
+                    errorMessage = '❌ ' + errorMessage;
+                } else if (errorMessage.includes('Failed to fetch')) {
+                    errorMessage = '❌ ไม่สามารถเชื่อมต่อกับ API Server ได้ กรุณาตรวจสอบ CORS configuration หรือ network connection';
+                }
+                errorDiv.textContent = errorMessage;
                 errorDiv.style.display = 'block';
                 loginBtn.disabled = false;
                 loginBtn.textContent = 'Login';
