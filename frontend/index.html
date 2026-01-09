@@ -521,12 +521,12 @@
         };
         
         // API Base URL
-        // เดิม: ถ้า hostname เป็น localhost จะเรียกไปที่ backend localhost:8000
-        // แต่ตอนนี้เราใช้ backend ที่รันบน AWS API Gateway เสมอ
-        // และ login/token ก็ทำงานกับ API Gateway แล้ว
-        // ดังนั้นเพื่อเลี่ยง error "Failed to fetch" (กรณีไม่มี backend local)
-        // ให้ชี้ไปที่ API Gateway ตลอดไป
-        const API_BASE_URL = 'https://tm0ch5vc2e.execute-api.ap-southeast-2.amazonaws.com/api';
+        // ถ้า hostname เป็น localhost จะเรียกไปที่ backend localhost:8000
+        // ถ้าไม่ใช่ localhost จะใช้ production API Gateway
+        const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+        const API_BASE_URL = isLocalhost 
+            ? 'http://localhost:8000/api'
+            : 'https://tm0ch5vc2e.execute-api.ap-southeast-2.amazonaws.com/api';
         
         // Token storage
         const TOKEN_KEY = 'cognito_id_token';
@@ -924,8 +924,8 @@
             if (checkboxContainer) {
                 checkboxContainer.innerHTML = '';
                 availableResumes.forEach(resume => {
-                    // Use key as identifier, filename as display name
-                    const resumeKey = resume.key || resume.resume_id || resume.filename;
+                    // Use s3_key as primary identifier (most reliable)
+                    const resumeKey = resume.s3_key || resume.key || resume.resume_id || resume.filename;
                     let resumeName = resume.filename || resume.name || resumeKey;
                     // Extract just the filename (basename) if it contains path
                     if (resumeName.includes('/')) {
@@ -938,13 +938,15 @@
                     const checkbox = document.createElement('input');
                     checkbox.type = 'checkbox';
                     checkbox.id = `resume_${resumeKey.replace(/[^a-zA-Z0-9]/g, '_')}`;
-                    checkbox.value = resumeKey;
+                    checkbox.value = resumeKey; // Store s3_key or resume_id
                     checkbox.name = 'resumeCheckbox';
+                    // Store full resume object in data attribute
+                    checkbox.dataset.resumeData = JSON.stringify(resume);
                     
                     const label = document.createElement('label');
                     label.htmlFor = checkbox.id;
                     label.textContent = resumeName;
-                    label.title = resume.key || resume.s3_url || '';
+                    label.title = resume.s3_key || resume.key || resume.s3_url || '';
                     
                     checkboxDiv.appendChild(checkbox);
                     checkboxDiv.appendChild(label);
@@ -1122,28 +1124,66 @@
                     }
                 }
                 
-                // Fallback: find in availableResumes
+                // Fallback: find in availableResumes by matching any identifier
                 if (!selectedResume) {
-                    selectedResume = availableResumes.find(r => 
-                        (r.s3_key || r.key || r.resume_id || r.filename) === selectedResumeId
-                    );
+                    selectedResume = availableResumes.find(r => {
+                        const rKey = r.s3_key || r.key;
+                        const rId = r.resume_id || r.id;
+                        const rFilename = r.filename || r.name;
+                        // Match by s3_key (most reliable), resume_id, or filename
+                        return (rKey && rKey === selectedResumeId) || 
+                               (rId && rId === selectedResumeId) || 
+                               (rFilename && rFilename === selectedResumeId) ||
+                               (rKey && selectedResumeId.includes(rKey)) ||
+                               (rKey && rKey.includes(selectedResumeId));
+                    });
+                }
+                
+                // Debug: log if resume not found
+                if (!selectedResume) {
+                    console.warn('Selected resume not found in availableResumes:', {
+                        selectedResumeId,
+                        availableResumes: availableResumes.map(r => ({
+                            s3_key: r.s3_key,
+                            resume_id: r.resume_id,
+                            filename: r.filename || r.name
+                        }))
+                    });
                 }
                 
                 const requestBody = {};
                 
-                // Prefer s3_key (most reliable)
-                if (selectedResume && selectedResume.s3_key) {
-                    requestBody.resume_key = selectedResume.s3_key;
-                    requestBody.resume_id = selectedResume.resume_id || selectedResume.s3_key;
-                } else if (selectedResume && selectedResume.key) {
-                    requestBody.resume_key = selectedResume.key;
-                    requestBody.resume_id = selectedResume.resume_id || selectedResume.key;
-                } else {
-                    // Fallback: use selectedResumeId as resume_key (assuming it's s3_key)
-                    requestBody.resume_key = selectedResumeId;
-                    requestBody.resume_id = selectedResumeId;
+                // Prefer s3_key (most reliable for S3 lookup)
+                if (selectedResume) {
+                    if (selectedResume.s3_key) {
+                        requestBody.resume_key = selectedResume.s3_key;
+                        requestBody.resume_id = selectedResume.resume_id || selectedResume.s3_key;
+                    } else if (selectedResume.key) {
+                        requestBody.resume_key = selectedResume.key;
+                        requestBody.resume_id = selectedResume.resume_id || selectedResume.key;
+                    } else if (selectedResume.resume_id) {
+                        requestBody.resume_id = selectedResume.resume_id;
+                        // Try to use filename as key if no s3_key
+                        if (selectedResume.filename || selectedResume.name) {
+                            requestBody.resume_key = selectedResume.filename || selectedResume.name;
+                        }
+                    }
                 }
                 
+                // If still no resume found, use selectedResumeId directly
+                // Check if it looks like UUID (contains hyphens) or s3_key (contains /)
+                if (!requestBody.resume_key && !requestBody.resume_id) {
+                    if (selectedResumeId.includes('/')) {
+                        // Looks like s3_key
+                        requestBody.resume_key = selectedResumeId;
+                        requestBody.resume_id = selectedResumeId;
+                    } else {
+                        // Might be resume_id (UUID or other format)
+                        requestBody.resume_id = selectedResumeId;
+                    }
+                }
+                
+                console.log('Selected Resume:', selectedResume);
                 console.log('Search request body:', requestBody);
                 
                 const searchResponse = await fetch(`${API_BASE_URL}/jobs/search_by_resume`, {
@@ -1187,7 +1227,45 @@
             
             // Get selected checkboxes
             const checkboxes = document.querySelectorAll('#resumeCheckboxes input[type="checkbox"]:checked');
-            const selectedResumeIds = Array.from(checkboxes).map(cb => cb.value).filter(id => id);
+            const selectedResumeKeys = [];
+            const selectedResumeIds = [];
+            
+            checkboxes.forEach(cb => {
+                const value = cb.value;
+                if (value) {
+                    // Try to get resume data from checkbox
+                    let resumeData = null;
+                    if (cb.dataset.resumeData) {
+                        try {
+                            resumeData = JSON.parse(cb.dataset.resumeData);
+                        } catch (e) {
+                            console.warn('Failed to parse resume data from checkbox:', e);
+                        }
+                    }
+                    
+                    // Prefer s3_key
+                    if (resumeData && resumeData.s3_key) {
+                        selectedResumeKeys.push(resumeData.s3_key);
+                        if (resumeData.resume_id) {
+                            selectedResumeIds.push(resumeData.resume_id);
+                        }
+                    } else if (resumeData && resumeData.key) {
+                        selectedResumeKeys.push(resumeData.key);
+                        if (resumeData.resume_id) {
+                            selectedResumeIds.push(resumeData.resume_id);
+                        }
+                    } else {
+                        // Fallback: use value directly
+                        if (value.includes('/')) {
+                            // Looks like s3_key
+                            selectedResumeKeys.push(value);
+                        } else {
+                            // Might be resume_id
+                            selectedResumeIds.push(value);
+                        }
+                    }
+                }
+            });
 
             if (!selectedJobId) {
                 showError('กรุณาเลือกตำแหน่งงาน');
@@ -1211,13 +1289,23 @@
                 if (token) {
                     headers['Authorization'] = `Bearer ${token}`;
                 }
+                const requestBody = {};
+                if (selectedResumeKeys.length > 0) {
+                    requestBody.resume_keys = selectedResumeKeys;
+                }
+                if (selectedResumeIds.length > 0) {
+                    requestBody.resume_ids = selectedResumeIds;
+                }
+                
+                console.log('Mode B search request:', {
+                    job_id: selectedJobId,
+                    requestBody: requestBody
+                });
+                
                 const searchResponse = await fetch(`${API_BASE_URL}/resumes/search_by_job?job_id=${encodeURIComponent(selectedJobId)}`, {
                     method: 'POST',
                     headers: headers,
-                    body: JSON.stringify({ 
-                        resume_keys: selectedResumeIds,
-                        resume_ids: selectedResumeIds  // Backward compatibility
-                    })
+                    body: JSON.stringify(requestBody)
                 });
 
                 if (!searchResponse.ok) {

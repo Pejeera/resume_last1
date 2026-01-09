@@ -5,6 +5,7 @@ Data access layer for resume operations
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 import uuid
+from botocore.exceptions import ClientError
 
 from app.clients.opensearch_client import opensearch_client
 from app.clients.s3_client import s3_client
@@ -292,8 +293,19 @@ class ResumeRepository:
                 )
                 file_content = file_obj['Body'].read()
                 logger.info(f"Downloaded file from S3: {s3_key}, size: {len(file_content)} bytes")
+            except ClientError as e:
+                error_code = e.response.get('Error', {}).get('Code', '')
+                error_msg = e.response.get('Error', {}).get('Message', str(e))
+                logger.error(f"Failed to download file from S3: {s3_key}, Error: {error_code}, Message: {error_msg}")
+                if error_code == 'NoSuchKey':
+                    logger.error(f"File does not exist in S3: {s3_key}")
+                elif error_code == 'AccessDenied':
+                    logger.error(f"Access denied to S3 file: {s3_key}")
+                return None
             except Exception as e:
                 logger.error(f"Failed to download file from S3: {s3_key}, error: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
                 return None
             
             # Get resume_id from metadata if available
@@ -317,18 +329,38 @@ class ResumeRepository:
             
             # Extract text
             logger.info(f"Extracting text from file: {file_name}")
-            text = self.file_processor.extract_text(file_content, file_name)
-            
-            if not text or len(text.strip()) == 0:
-                logger.error(f"Failed to extract text from file: {file_name}")
+            try:
+                text = self.file_processor.extract_text(file_content, file_name)
+                
+                if not text or len(text.strip()) == 0:
+                    logger.error(f"Failed to extract text from file: {file_name} (empty result)")
+                    # For .txt files, try reading as plain text
+                    if file_name.lower().endswith('.txt'):
+                        try:
+                            text = file_content.decode('utf-8')
+                            logger.info(f"Read .txt file as plain text, length: {len(text)}")
+                        except:
+                            logger.error(f"Failed to decode .txt file as UTF-8")
+                    if not text or len(text.strip()) == 0:
+                        return None
+                
+                logger.info(f"Extracted text length: {len(text)} characters")
+            except Exception as e:
+                logger.error(f"Error extracting text from file: {file_name}, error: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
                 return None
-            
-            logger.info(f"Extracted text length: {len(text)} characters")
             
             # Generate embedding
             logger.info(f"Generating embedding for resume: {resume_id}")
-            embedding = self.bedrock.generate_embedding(text)
-            logger.info(f"Generated embedding dimension: {len(embedding)}")
+            try:
+                embedding = self.bedrock.generate_embedding(text)
+                logger.info(f"Generated embedding dimension: {len(embedding)}")
+            except Exception as e:
+                logger.error(f"Error generating embedding for resume: {resume_id}, error: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+                return None
             
             # Create document
             document = {

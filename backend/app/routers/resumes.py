@@ -519,6 +519,7 @@ async def bulk_upload_resumes(files: List[UploadFile] = File(..., description="�
 class SearchResumesByJobRequest(BaseModel):
     """Request model สำหรับค้นหาเรซูเม่ตามงาน"""
     resume_ids: Optional[List[str]] = Field(None, description="รายการ ID ของเรซูเม่ที่ต้องการค้นหา (ถ้าไม่ระบุจะค้นหาทั้งหมด)")
+    resume_keys: Optional[List[str]] = Field(None, description="รายการ S3 keys ของเรซูเม่ (ใช้แทน resume_ids ถ้ามี)")
 
 @router.post("/search_by_job")
 async def search_resumes_by_job(
@@ -625,23 +626,45 @@ async def search_resumes_by_job(
         # Get job description from repository
         from app.repositories.job_repository import job_repository
         job = job_repository.get_job(job_id)
+        
+        # If not found in OpenSearch, try to get from S3
+        if not job:
+            logger.info(f"Job {job_id} not in OpenSearch, fetching from S3...")
+            job = job_repository.get_job_from_s3(job_id)
+        
         if not job:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Job {job_id} not found"
+                detail=f"Job {job_id} not found in S3 or OpenSearch"
             )
+        
         job_description = job.get("description", "")
+        if not job_description:
+            job_description = job.get("text_excerpt", "")
         
         # Get resume_ids from request if provided
+        # Prefer resume_keys (s3_key) if available, otherwise use resume_ids
         resume_ids = None
-        if request and request.resume_ids:
-            resume_ids = request.resume_ids
-            # Process resumes from S3 if needed
-            for resume_id in resume_ids:
-                resume = resume_repository.get_resume(resume_id)
-                if not resume:
-                    logger.info(f"Resume {resume_id} not in OpenSearch, fetching from S3...")
-                    resume = resume_repository.get_resume_from_s3(resume_id)
+        if request:
+            if request.resume_keys:
+                # Use resume_keys (s3_key) - more reliable
+                logger.info(f"Using {len(request.resume_keys)} resume_keys for search")
+                # Process resumes from S3 using resume_keys
+                for resume_key in request.resume_keys:
+                    resume = resume_repository.get_resume_from_s3_by_key(resume_key)
+                    if resume:
+                        # Add resume_id to list for matching service
+                        if resume_ids is None:
+                            resume_ids = []
+                        resume_ids.append(resume.get('id', resume_key))
+            elif request.resume_ids:
+                resume_ids = request.resume_ids
+                # Process resumes from S3 if needed
+                for resume_id in resume_ids:
+                    resume = resume_repository.get_resume(resume_id)
+                    if not resume:
+                        logger.info(f"Resume {resume_id} not in OpenSearch, fetching from S3...")
+                        resume = resume_repository.get_resume_from_s3(resume_id)
         
         # Search resumes
         results = matching_service.search_resumes_by_job(

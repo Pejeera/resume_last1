@@ -6,7 +6,7 @@ Write-Host "Starting Frontend Web Server" -ForegroundColor Cyan
 Write-Host "==========================================" -ForegroundColor Cyan
 Write-Host ""
 
-$port = 8000
+$port = 3000
 $frontendDir = $PSScriptRoot
 
 Write-Host "Frontend directory: $frontendDir" -ForegroundColor Yellow

@@ -554,6 +554,12 @@ async def search_jobs_by_resume(request: SearchByResumeRequest):
             resume = resume_repository.get_resume_from_s3_by_key(request.resume_key)
             if not resume:
                 logger.warning(f"Failed to get resume by resume_key: {request.resume_key}")
+                # Try with resume_id as fallback
+                if request.resume_id and request.resume_id != request.resume_key:
+                    logger.info(f"Trying fallback: using resume_id: {request.resume_id}")
+                    resume = resume_repository.get_resume(request.resume_id)
+                    if not resume:
+                        resume = resume_repository.get_resume_from_s3(request.resume_id)
         else:
             # Try OpenSearch first, then S3
             logger.info(f"Using resume_id to fetch resume: {request.resume_id}")
@@ -566,6 +572,8 @@ async def search_jobs_by_resume(request: SearchByResumeRequest):
             error_msg = f"Resume {resume_identifier} not found in S3 or OpenSearch"
             if request.resume_key:
                 error_msg += f" (s3_key: {request.resume_key})"
+            if request.resume_id:
+                error_msg += f" (resume_id: {request.resume_id})"
             logger.error(error_msg)
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,

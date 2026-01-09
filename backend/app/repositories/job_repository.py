@@ -76,8 +76,42 @@ class JobRepository:
             raise
     
     def get_job(self, job_id: str) -> Optional[Dict[str, Any]]:
-        """Get job by ID"""
+        """Get job by ID from OpenSearch"""
         return self.opensearch.get_document(self.INDEX_NAME, job_id)
+    
+    def get_job_from_s3(self, job_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Get job from S3 by ID
+        Searches in S3 jobs directory
+        """
+        try:
+            from app.clients.s3_client import s3_client
+            from app.core.config import settings
+            
+            # Load jobs from S3
+            jobs_data = s3_client.load_jobs_data()
+            if not jobs_data:
+                return None
+            
+            # Find job by ID
+            for job in jobs_data:
+                job_id_in_data = job.get("_id") or job.get("id") or job.get("job_id") or ""
+                if job_id_in_data == job_id:
+                    # Return job in OpenSearch format
+                    return {
+                        "id": job_id,
+                        "title": job.get("title", "N/A"),
+                        "description": job.get("description", job.get("text_excerpt", "")),
+                        "text_excerpt": job.get("text_excerpt", job.get("description", ""))[:500],
+                        "metadata": job.get("metadata", {}),
+                        "created_at": job.get("created_at", "")
+                    }
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error getting job from S3: {e}")
+            return None
 
 
 job_repository = JobRepository()
