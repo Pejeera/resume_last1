@@ -206,6 +206,7 @@ class OpenSearchClient:
             return results_copy
         
         try:
+            # Try KNN search first
             query = {
                 "size": top_k,
                 "query": {
@@ -232,17 +233,93 @@ class OpenSearchClient:
                     "filter": filters
                 }
             
-            response = self.client.search(index=index_name, body=query)
-            
-            results = []
-            for hit in response['hits']['hits']:
-                result = hit['_source']
-                result['_score'] = hit['_score']
-                result['_id'] = hit['_id']
-                results.append(result)
-            
-            logger.info(f"Vector search returned {len(results)} results")
-            return results
+            try:
+                response = self.client.search(index=index_name, body=query)
+                
+                results = []
+                for hit in response['hits']['hits']:
+                    result = hit['_source']
+                    result['_score'] = hit['_score']
+                    result['_id'] = hit['_id']
+                    results.append(result)
+                
+                logger.info(f"Vector search returned {len(results)} results")
+                return results
+                
+            except Exception as knn_error:
+                error_msg = str(knn_error)
+                # If ANN structure not built, fallback to script_score query
+                if "not built for ANN search" in error_msg or "ANN" in error_msg:
+                    logger.warning(f"ANN structure not ready, using fallback script_score query")
+                    
+                    # Fallback: Use script_score to calculate cosine similarity manually
+                    import math
+                    
+                    # Calculate query vector norm
+                    query_norm = math.sqrt(sum(x * x for x in query_vector))
+                    
+                    # Script to calculate cosine similarity
+                    script_source = f"""
+                    double dotProduct = 0.0;
+                    double docNorm = 0.0;
+                    if (doc['embeddings'].size() != params.queryVector.size()) {{
+                        return 0.0;
+                    }}
+                    for (int i = 0; i < doc['embeddings'].size(); i++) {{
+                        dotProduct += doc['embeddings'][i] * params.queryVector[i];
+                        docNorm += doc['embeddings'][i] * doc['embeddings'][i];
+                    }}
+                    double docNormSqrt = Math.sqrt(docNorm);
+                    double queryNorm = params.queryNorm;
+                    if (docNormSqrt == 0.0 || queryNorm == 0.0) {{
+                        return 0.0;
+                    }}
+                    return dotProduct / (docNormSqrt * queryNorm);
+                    """
+                    
+                    fallback_query = {
+                        "size": top_k,
+                        "query": {
+                            "script_score": {
+                                "query": {"match_all": {}},
+                                "script": {
+                                    "source": script_source,
+                                    "params": {
+                                        "queryVector": query_vector,
+                                        "queryNorm": query_norm
+                                    }
+                                }
+                            }
+                        },
+                        "_source": True
+                    }
+                    
+                    if filters:
+                        fallback_query["query"]["script_score"]["query"] = {"bool": {"filter": filters}}
+                    
+                    try:
+                        response = self.client.search(index=index_name, body=fallback_query)
+                        
+                        results = []
+                        for hit in response['hits']['hits']:
+                            result = hit['_source']
+                            result['_score'] = hit['_score']
+                            result['_id'] = hit['_id']
+                            results.append(result)
+                        
+                        # Sort by score descending
+                        results.sort(key=lambda x: x.get('_score', 0), reverse=True)
+                        results = results[:top_k]
+                        
+                        logger.info(f"Fallback vector search returned {len(results)} results")
+                        return results
+                        
+                    except Exception as fallback_error:
+                        logger.error(f"Fallback vector search also failed: {fallback_error}")
+                        raise OpenSearchError(f"Vector search failed (both KNN and fallback): {str(fallback_error)}")
+                else:
+                    # Other error, raise it
+                    raise
             
         except Exception as e:
             logger.error(f"Error in vector search: {e}")

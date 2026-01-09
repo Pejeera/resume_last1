@@ -904,17 +904,19 @@
                 selectA.innerHTML = '<option value="">-- เลือก Resume --</option>';
                 availableResumes.forEach(resume => {
                     const option = document.createElement('option');
-                    // Use key as identifier, filename as display name
-                    const resumeKey = resume.key || resume.resume_id || resume.filename;
+                    // Use s3_key as primary identifier (most reliable)
+                    const resumeKey = resume.s3_key || resume.key || resume.resume_id || resume.filename;
                     let resumeName = resume.filename || resume.name || resumeKey;
                     // Extract just the filename (basename) if it contains path
                     if (resumeName.includes('/')) {
                         resumeName = resumeName.split('/').pop();
                     }
                     option.value = resumeKey;
+                    // Store full resume object in data attribute for later use
+                    option.dataset.resumeData = JSON.stringify(resume);
                     // Display only filename, no path or ID
                     option.textContent = resumeName;
-                    option.title = resume.key || resume.s3_url || '';
+                    option.title = resume.s3_key || resume.key || resume.s3_url || '';
                     selectA.appendChild(option);
                 });
             }
@@ -1107,13 +1109,47 @@
                 if (token) {
                     headers['Authorization'] = `Bearer ${token}`;
                 }
+                // Get resume object to find s3_key
+                // Try to get from option data attribute first, then from availableResumes
+                const selectedOption = resumeSelect.options[resumeSelect.selectedIndex];
+                let selectedResume = null;
+                
+                if (selectedOption && selectedOption.dataset.resumeData) {
+                    try {
+                        selectedResume = JSON.parse(selectedOption.dataset.resumeData);
+                    } catch (e) {
+                        console.warn('Failed to parse resume data from option:', e);
+                    }
+                }
+                
+                // Fallback: find in availableResumes
+                if (!selectedResume) {
+                    selectedResume = availableResumes.find(r => 
+                        (r.s3_key || r.key || r.resume_id || r.filename) === selectedResumeId
+                    );
+                }
+                
+                const requestBody = {};
+                
+                // Prefer s3_key (most reliable)
+                if (selectedResume && selectedResume.s3_key) {
+                    requestBody.resume_key = selectedResume.s3_key;
+                    requestBody.resume_id = selectedResume.resume_id || selectedResume.s3_key;
+                } else if (selectedResume && selectedResume.key) {
+                    requestBody.resume_key = selectedResume.key;
+                    requestBody.resume_id = selectedResume.resume_id || selectedResume.key;
+                } else {
+                    // Fallback: use selectedResumeId as resume_key (assuming it's s3_key)
+                    requestBody.resume_key = selectedResumeId;
+                    requestBody.resume_id = selectedResumeId;
+                }
+                
+                console.log('Search request body:', requestBody);
+                
                 const searchResponse = await fetch(`${API_BASE_URL}/jobs/search_by_resume`, {
                     method: 'POST',
                     headers: headers,
-                    body: JSON.stringify({ 
-                        resume_key: selectedResumeId,
-                        resume_id: selectedResumeId  // Backward compatibility
-                    })
+                    body: JSON.stringify(requestBody)
                 });
 
                 if (!searchResponse.ok) {

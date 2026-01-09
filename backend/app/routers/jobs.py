@@ -34,7 +34,8 @@ class JobCreateResponse(BaseModel):
 
 class SearchByResumeRequest(BaseModel):
     """Request model สำหรับค้นหางานตามเรซูเม่"""
-    resume_id: str = Field(..., description="ID ของเรซูเม่")
+    resume_id: Optional[str] = Field(None, description="ID ของเรซูเม่")
+    resume_key: Optional[str] = Field(None, description="S3 key ของเรซูเม่ (ใช้แทน resume_id ถ้ามี)")
 
 
 @router.get("/list")
@@ -535,18 +536,40 @@ async def search_jobs_by_resume(request: SearchByResumeRequest):
     - ใช้ `/api/jobs/list` เพื่อดูรายละเอียดงานเพิ่มเติม
     """
     try:
+        # Determine which identifier to use (prefer resume_key if provided)
+        resume_identifier = request.resume_key or request.resume_id
+        
+        if not resume_identifier:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Either resume_id or resume_key must be provided"
+            )
+        
         # Get resume (will fetch from S3 and process if needed)
-        resume = resume_repository.get_resume(request.resume_id)
+        # If resume_key is provided, use it directly; otherwise use resume_id
+        resume = None
+        if request.resume_key:
+            # Use resume_key (s3_key) to get resume directly from S3
+            logger.info(f"Using resume_key to fetch resume: {request.resume_key}")
+            resume = resume_repository.get_resume_from_s3_by_key(request.resume_key)
+            if not resume:
+                logger.warning(f"Failed to get resume by resume_key: {request.resume_key}")
+        else:
+            # Try OpenSearch first, then S3
+            logger.info(f"Using resume_id to fetch resume: {request.resume_id}")
+            resume = resume_repository.get_resume(request.resume_id)
+            if not resume:
+                logger.info(f"Resume {request.resume_id} not in OpenSearch, fetching from S3...")
+                resume = resume_repository.get_resume_from_s3(request.resume_id)
         
-        # If not found in OpenSearch, try to get from S3 and process
         if not resume:
-            logger.info(f"Resume {request.resume_id} not in OpenSearch, fetching from S3...")
-            resume = resume_repository.get_resume_from_s3(request.resume_id)
-        
-        if not resume:
+            error_msg = f"Resume {resume_identifier} not found in S3 or OpenSearch"
+            if request.resume_key:
+                error_msg += f" (s3_key: {request.resume_key})"
+            logger.error(error_msg)
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Resume {request.resume_id} not found in S3 or OpenSearch"
+                detail=error_msg
             )
         
         # Get full text from resume

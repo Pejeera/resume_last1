@@ -65,7 +65,8 @@ class Settings(BaseSettings):
     # Bedrock
     BEDROCK_REGION: str = "ap-southeast-1"
     BEDROCK_EMBEDDING_MODEL: str = "cohere.embed-multilingual-v3"
-    BEDROCK_RERANK_MODEL: str = "us.amazon.nova-lite-v1:0"
+    BEDROCK_RERANK_MODEL: str = "amazon.nova-lite-v1:0"  # Use us-east-1 region for Nova models
+    BEDROCK_RERANK_REGION: str = "us-east-1"  # Nova models are typically available in us-east-1
     
     # Secrets Manager (optional)
     SECRETS_MANAGER_SECRET_NAME: str = ""

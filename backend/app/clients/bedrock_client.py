@@ -19,6 +19,7 @@ class BedrockClient:
     def __init__(self):
         if settings.USE_MOCK:
             self.client = None
+            self.rerank_client = None
             logger.info("BedrockClient initialized in MOCK mode")
         else:
             # In Lambda, always use IAM role - don't pass credentials
@@ -29,33 +30,39 @@ class BedrockClient:
             # Check if we're in Lambda (Lambda sets AWS_LAMBDA_FUNCTION_NAME)
             is_lambda = os.environ.get('AWS_LAMBDA_FUNCTION_NAME') is not None
             
-            if is_lambda:
-                # In Lambda: Use IAM role only - don't pass any credentials
-                self.client = boto3.client(
-                    'bedrock-runtime',
-                    region_name=settings.BEDROCK_REGION
-                )
-                logger.info(f"BedrockClient initialized using IAM role (Lambda) for region: {settings.BEDROCK_REGION}")
-            else:
-                # Local dev: Use explicit credentials if provided
-                client_kwargs = {
-                    'service_name': 'bedrock-runtime',
-                    'region_name': settings.BEDROCK_REGION
-                }
-                
-                # Only add credentials if explicitly provided (for local dev)
-                if (settings.AWS_ACCESS_KEY_ID and 
-                    settings.AWS_SECRET_ACCESS_KEY and 
-                    settings.AWS_ACCESS_KEY_ID.strip() != "" and 
-                    settings.AWS_SECRET_ACCESS_KEY.strip() != ""):
-                    client_kwargs['aws_access_key_id'] = settings.AWS_ACCESS_KEY_ID
-                    client_kwargs['aws_secret_access_key'] = settings.AWS_SECRET_ACCESS_KEY
-                    logger.info(f"BedrockClient initialized with explicit credentials for region: {settings.BEDROCK_REGION}")
+            # Helper function to create client
+            def create_client(region):
+                if is_lambda:
+                    # In Lambda: Use IAM role only - don't pass any credentials
+                    return boto3.client(
+                        'bedrock-runtime',
+                        region_name=region
+                    )
                 else:
-                    # Use default credentials (from ~/.aws/credentials or environment)
-                    logger.info(f"BedrockClient initialized using default credentials for region: {settings.BEDROCK_REGION}")
-                
-                self.client = boto3.client(**client_kwargs)
+                    # Local dev: Use explicit credentials if provided
+                    client_kwargs = {
+                        'service_name': 'bedrock-runtime',
+                        'region_name': region
+                    }
+                    
+                    # Only add credentials if explicitly provided (for local dev)
+                    if (settings.AWS_ACCESS_KEY_ID and 
+                        settings.AWS_SECRET_ACCESS_KEY and 
+                        settings.AWS_ACCESS_KEY_ID.strip() != "" and 
+                        settings.AWS_SECRET_ACCESS_KEY.strip() != ""):
+                        client_kwargs['aws_access_key_id'] = settings.AWS_ACCESS_KEY_ID
+                        client_kwargs['aws_secret_access_key'] = settings.AWS_SECRET_ACCESS_KEY
+                    
+                    return boto3.client(**client_kwargs)
+            
+            # Client for embeddings (uses BEDROCK_REGION)
+            self.client = create_client(settings.BEDROCK_REGION)
+            logger.info(f"BedrockClient initialized for embeddings region: {settings.BEDROCK_REGION}")
+            
+            # Client for rerank (uses BEDROCK_RERANK_REGION if set, otherwise BEDROCK_REGION)
+            rerank_region = getattr(settings, 'BEDROCK_RERANK_REGION', None) or settings.BEDROCK_REGION
+            self.rerank_client = create_client(rerank_region)
+            logger.info(f"BedrockClient initialized for rerank region: {rerank_region}")
     
     def generate_embedding(self, text: str) -> List[float]:
         """
@@ -162,44 +169,98 @@ class BedrockClient:
             # Prepare prompt for Nova 2 Lite
             prompt = self._build_rerank_prompt(query, candidates, top_k)
             
+            # Nova Lite format: content must be an array with text object
             body = json.dumps({
                 "messages": [
                     {
                         "role": "user",
-                        "content": prompt
+                        "content": [
+                            {
+                                "text": prompt
+                            }
+                        ]
                     }
                 ],
                 "inferenceConfig": {
                     "maxTokens": 2000,
                     "temperature": 0.3,
                     "topP": 0.9
-                },
-                "responseFormat": {
-                    "type": "json"
                 }
             })
             
-            response = self.client.invoke_model(
+            # Use rerank_client which may be in different region (us-east-1 for Nova models)
+            rerank_client = getattr(self, 'rerank_client', self.client)
+            response = rerank_client.invoke_model(
                 modelId=settings.BEDROCK_RERANK_MODEL,
                 body=body,
                 contentType="application/json",
                 accept="application/json"
             )
             
+            # Parse Nova Lite response format: {"output": {"message": {"content": [{"text": "..."}]}}}
             response_body = json.loads(response['body'].read())
             
-            # Extract JSON from response
-            content = response_body.get('content', [])
-            if content:
-                result_text = content[0].get('text', '{}')
-                result_json = json.loads(result_text)
-                
-                # Validate and format results
-                reranked = self._parse_rerank_results(result_json, candidates)
+            # Debug: log response structure
+            logger.debug(f"Bedrock response keys: {list(response_body.keys())}")
+            
+            # Try different response formats
+            result_text = None
+            
+            # Format 1: Nova Lite format {"output": {"message": {"content": [{"text": "..."}]}}}
+            output = response_body.get('output', {})
+            if output:
+                message = output.get('message', {})
+                if message:
+                    content = message.get('content', [])
+                    if content and len(content) > 0:
+                        result_text = content[0].get('text', '')
+            
+            # Format 2: Direct content format {"content": [{"text": "..."}]}
+            if not result_text:
+                content = response_body.get('content', [])
+                if content and len(content) > 0:
+                    result_text = content[0].get('text', '')
+            
+            # Format 3: Direct text field
+            if not result_text:
+                result_text = response_body.get('text', '')
+            
+            # Format 4: Direct JSON in response
+            if not result_text and 'ranked_candidates' in response_body:
+                # Response is already the JSON we need
+                reranked = self._parse_rerank_results(response_body, candidates)
                 logger.info(f"Reranked {len(reranked)} candidates")
                 return reranked
-            else:
-                raise RerankError("Empty response from Bedrock")
+            
+            if not result_text or result_text.strip() == '':
+                logger.error(f"Empty response text. Full response: {response_body}")
+                raise RerankError("Empty response text from Bedrock")
+            
+            # Clean up markdown code blocks if present
+            result_text = result_text.strip()
+            if result_text.startswith('```json'):
+                # Remove ```json and ``` markers
+                result_text = result_text[7:]  # Remove ```json
+                if result_text.endswith('```'):
+                    result_text = result_text[:-3]  # Remove ```
+            elif result_text.startswith('```'):
+                # Remove ``` markers
+                result_text = result_text[3:]
+                if result_text.endswith('```'):
+                    result_text = result_text[:-3]
+            result_text = result_text.strip()
+            
+            # Try to parse JSON from text
+            try:
+                result_json = json.loads(result_text)
+            except json.JSONDecodeError as e:
+                logger.error(f"Failed to parse JSON from response. Text: {result_text[:500]}")
+                raise RerankError(f"Invalid JSON in response: {str(e)}")
+            
+            # Validate and format results
+            reranked = self._parse_rerank_results(result_json, candidates)
+            logger.info(f"Reranked {len(reranked)} candidates")
+            return reranked
                 
         except (ClientError, json.JSONDecodeError, KeyError) as e:
             logger.error(f"Bedrock rerank error: {e}")
