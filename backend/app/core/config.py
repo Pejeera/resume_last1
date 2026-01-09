@@ -52,7 +52,7 @@ class Settings(BaseSettings):
     AWS_SECRET_ACCESS_KEY: str = ""
     
     # S3
-    S3_BUCKET_NAME: str = "resume-matching-bucket"
+    S3_BUCKET_NAME: str = "resume-matching-533267343789"
     S3_PREFIX: str = "resumes/"
     
     # OpenSearch

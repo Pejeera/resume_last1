@@ -983,6 +983,11 @@
                 loadResumesList();
             }
             
+            // Reload jobs list when switching to mode B (for job selection)
+            if (mode === 'modeB') {
+                loadJobsList();
+            }
+            
             // Reload jobs list when switching to jobsList
             if (mode === 'jobsList') {
                 loadJobsListForViewer();

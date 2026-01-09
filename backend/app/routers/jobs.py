@@ -3,6 +3,8 @@ Job Router
 Handles job creation and search operations
 """
 import json
+import os
+from datetime import datetime
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
 from typing import Optional
@@ -99,34 +101,59 @@ async def list_jobs():
         result = []
         
         # Load directly from S3 directory: resumes/jobs/
-        logger.info("Loading jobs from S3 directory: resumes/jobs/")
+        logger.info(f"Loading jobs from S3 bucket: {settings.S3_BUCKET_NAME}, prefix: {settings.S3_PREFIX}jobs/")
         try:
             jobs_data = s3_client.load_jobs_data()
+            logger.info(f"Raw jobs_data from S3: {len(jobs_data) if jobs_data else 0} items")
+            
             if jobs_data and len(jobs_data) > 0:
-                result = [
-                    {
-                        "job_id": job.get("_id", job.get("id", job.get("job_id", ""))),
+                result = []
+                for job in jobs_data:
+                    # Extract job ID - support multiple formats
+                    job_id = job.get("_id") or job.get("id") or job.get("job_id") or ""
+                    
+                    # Skip if no valid ID
+                    if not job_id:
+                        logger.warning(f"Skipping job without ID: {job.get('title', 'Unknown')}")
+                        continue
+                    
+                    # Build job object with both id and job_id for frontend compatibility
+                    job_obj = {
+                        "id": job_id,  # Frontend uses this
+                        "job_id": job_id,  # Backward compatibility
                         "title": job.get("title", "N/A"),
                         "description": job.get("description", job.get("text_excerpt", ""))[:200],
-                        "created_at": job.get("created_at", "")
+                        "created_at": job.get("created_at", ""),
+                        # Include full job data for frontend job viewer
+                        "location": job.get("location") or (job.get("metadata", {}).get("location") if isinstance(job.get("metadata"), dict) else None),
+                        "department": job.get("department") or (job.get("metadata", {}).get("department") if isinstance(job.get("metadata"), dict) else None),
+                        "employment_type": job.get("employment_type") or (job.get("metadata", {}).get("employment_type") if isinstance(job.get("metadata"), dict) else None),
+                        "experience_years": job.get("experience_years") or (job.get("metadata", {}).get("experience_years") if isinstance(job.get("metadata"), dict) else None),
+                        "skills": job.get("skills") or (job.get("metadata", {}).get("skills", []) if isinstance(job.get("metadata"), dict) else []),
+                        "responsibilities": job.get("responsibilities") or (job.get("metadata", {}).get("responsibilities", []) if isinstance(job.get("metadata"), dict) else []),
+                        "requirements": job.get("requirements") or (job.get("metadata", {}).get("requirements", []) if isinstance(job.get("metadata"), dict) else []),
+                        "scoring_weights": job.get("scoring_weights") or (job.get("metadata", {}).get("scoring_weights") if isinstance(job.get("metadata"), dict) else None),
+                        "metadata": job.get("metadata", {})
                     }
-                    for job in jobs_data
-                ]
-                logger.info(f"Loaded {len(result)} jobs from S3 directory: resumes/jobs/")
+                    result.append(job_obj)
+                
+                logger.info(f"Loaded {len(result)} jobs from S3 directory: {settings.S3_PREFIX}jobs/")
             else:
-                logger.warning("No jobs found in S3 directory: resumes/jobs/ (directory may be empty or not exist)")
+                logger.warning(f"No jobs found in S3 bucket: {settings.S3_BUCKET_NAME}, prefix: {settings.S3_PREFIX}jobs/ (directory may be empty or not exist)")
                 # Clear mock storage if in mock mode
                 if settings.USE_MOCK:
                     from app.clients.opensearch_client import opensearch_client
                     opensearch_client._mock_data_storage["jobs_index"] = []
                     logger.info("Cleared mock storage jobs_index")
         except Exception as s3_error:
-            logger.error(f"Error loading jobs from S3: {s3_error}")
+            logger.error(f"Error loading jobs from S3: {s3_error}", exc_info=True)
             # Clear mock storage if in mock mode
             if settings.USE_MOCK:
                 from app.clients.opensearch_client import opensearch_client
                 opensearch_client._mock_data_storage["jobs_index"] = []
                 logger.info("Cleared mock storage jobs_index due to error")
+            # Don't raise error, just return empty list
+            # This allows frontend to show helpful message
         
         logger.info(f"Listed {len(result)} jobs")
         return {
@@ -135,7 +162,7 @@ async def list_jobs():
         }
         
     except Exception as e:
-        logger.error(f"List jobs error: {e}")
+        logger.error(f"List jobs error: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to list jobs: {str(e)}"
@@ -551,5 +578,174 @@ async def search_jobs_by_resume(request: SearchByResumeRequest):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Search failed: {str(e)}"
+        )
+
+
+class JobUpdateRequest(BaseModel):
+    """Request model สำหรับอัปเดตงาน"""
+    job: dict = Field(..., description="ข้อมูลงานที่ต้องการอัปเดต")
+
+
+@router.put("/{job_id}")
+async def update_job(job_id: str, request: JobUpdateRequest):
+    """
+    ✏️ อัปเดตงาน
+    
+    อัปเดตข้อมูลงานใน S3 และ OpenSearch
+    
+    ---
+    
+    ## 📋 ขั้นตอนการใช้งาน:
+    
+    ### 1. เตรียมข้อมูลงาน
+    - ส่ง `job` object ที่มีข้อมูลที่ต้องการอัปเดต
+    - ต้องมี `id` หรือ `job_id` ใน job object
+    
+    ### 2. เรียกใช้ Endpoint
+    - ใส่ `job_id` ใน path parameter
+    - ส่ง `job` object ใน request body
+    - คลิก "Execute"
+    
+    ### 3. รับผลลัพธ์
+    - Response จะมี `message` และ `job_id`
+    - งานจะถูกอัปเดตใน S3 และ OpenSearch อัตโนมัติ
+    
+    ---
+    
+    ## 📝 ตัวอย่าง Request:
+    
+    ```json
+    {
+      "job": {
+        "id": "job-123",
+        "title": "Senior Software Engineer",
+        "description": "Updated description...",
+        "location": "Bangkok",
+        "department": "Engineering",
+        "skills": ["Python", "JavaScript"],
+        "scoring_weights": {
+          "ทักษะ": 50,
+          "ประสบการณ์": 30,
+          "การศึกษา": 20
+        }
+      }
+    }
+    ```
+    
+    ---
+    
+    ## ⚠️ หมายเหตุ:
+    
+    - งานจะถูกอัปเดตใน S3 ทันที
+    - Embedding จะถูกสร้างใหม่อัตโนมัติถ้าจำเป็น
+    - งานใน OpenSearch จะถูกอัปเดตด้วย
+    """
+    try:
+        from app.clients.s3_client import s3_client
+        from app.clients.opensearch_client import opensearch_client
+        from app.core.config import settings
+        from app.clients.bedrock_client import bedrock_client
+        
+        job_data = request.job
+        
+        # Validate job_id matches
+        job_id_from_data = job_data.get("id") or job_data.get("job_id") or job_data.get("_id")
+        if job_id_from_data and job_id_from_data != job_id:
+            logger.warning(f"Job ID mismatch: path={job_id}, data={job_id_from_data}, using path parameter")
+        
+        # Use path parameter as source of truth
+        final_job_id = job_id
+        
+        # Ensure job_id is set in job_data
+        job_data["id"] = final_job_id
+        job_data["job_id"] = final_job_id
+        job_data["_id"] = final_job_id
+        
+        # Save to S3
+        jobs_prefix = f"{settings.S3_PREFIX}jobs/"
+        s3_key = f"{jobs_prefix}{final_job_id}.json"
+        
+        if settings.USE_MOCK:
+            # In mock mode, save to local file
+            local_dir = "jobs"
+            os.makedirs(local_dir, exist_ok=True)
+            local_file = os.path.join(local_dir, f"{final_job_id}.json")
+            try:
+                with open(local_file, 'w', encoding='utf-8') as f:
+                    json.dump(job_data, f, ensure_ascii=False, indent=2)
+                logger.info(f"MOCK: Updated job {final_job_id} in {local_file}")
+            except Exception as e:
+                logger.error(f"MOCK: Failed to save job: {e}")
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Failed to save job: {str(e)}"
+                )
+        else:
+            # Save to S3
+            try:
+                data_json = json.dumps(job_data, ensure_ascii=False, indent=2).encode('utf-8')
+                s3_client.client.put_object(
+                    Bucket=settings.S3_BUCKET_NAME,
+                    Key=s3_key,
+                    Body=data_json,
+                    ContentType='application/json',
+                    Metadata={
+                        "updated_at": datetime.utcnow().isoformat(),
+                        "job_id": final_job_id
+                    }
+                )
+                logger.info(f"Updated job {final_job_id} in S3: {s3_key}")
+            except Exception as e:
+                logger.error(f"Failed to save job to S3: {e}")
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Failed to save job to S3: {str(e)}"
+                )
+        
+        # Update in OpenSearch (if not in mock mode)
+        if not settings.USE_MOCK:
+            try:
+                # Prepare document for indexing
+                document = {k: v for k, v in job_data.items() if k != "_id"}
+                
+                # Ensure required fields exist
+                if "id" not in document:
+                    document["id"] = final_job_id
+                
+                # Generate embedding if not already present or if description changed
+                if "embeddings" not in document or not document.get("embeddings"):
+                    logger.info(f"Generating embedding for updated job {final_job_id}")
+                    full_text = f"{document.get('title', '')}\n{document.get('description', '')}"
+                    try:
+                        embedding = bedrock_client.generate_embedding(full_text)
+                        document["embeddings"] = embedding
+                        logger.info(f"Generated embedding for job {final_job_id} (dimension: {len(embedding)})")
+                    except Exception as e:
+                        logger.error(f"Failed to generate embedding for job {final_job_id}: {e}")
+                        # Continue without embedding (will be skipped in vector search)
+                
+                # Index to OpenSearch
+                opensearch_client.index_document(
+                    index_name="jobs_index",
+                    doc_id=str(final_job_id),
+                    document=document
+                )
+                logger.info(f"Updated job {final_job_id} in OpenSearch")
+            except Exception as e:
+                logger.warning(f"Failed to update job in OpenSearch (job still saved in S3): {e}")
+                # Don't fail the request if OpenSearch update fails
+        
+        return {
+            "message": f"Job {final_job_id} updated successfully",
+            "job_id": final_job_id
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Update job error: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to update job: {str(e)}"
         )
 

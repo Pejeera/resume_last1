@@ -304,6 +304,145 @@ class APITester:
             print_error(f"Job create request failed: {str(e)}")
             return False
     
+    def test_job_update(self, job_id: str) -> bool:
+        """Test job update endpoint"""
+        print_step(6, f"Testing /api/jobs/{{job_id}} PUT endpoint")
+        
+        if not self.token:
+            print_error("No token available. Please login first.")
+            return False
+        
+        try:
+            url = f"{self.base_url}{API_PREFIX}/jobs/{job_id}"
+            payload = {
+                "job": {
+                    "id": job_id,
+                    "job_id": job_id,
+                    "title": "Updated Test Job",
+                    "description": "This is an updated test job",
+                    "location": "Bangkok",
+                    "department": "Engineering",
+                    "skills": ["Python", "JavaScript"],
+                    "metadata": {
+                        "test": True,
+                        "updated_by": "test_api.py"
+                    }
+                }
+            }
+            
+            response = requests.put(
+                url,
+                json=payload,
+                headers=self.get_headers(),
+                timeout=30,
+                verify=False
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                print_success(f"Job updated successfully!")
+                print_info(f"  Job ID: {data.get('job_id')}")
+                print_info(f"  Message: {data.get('message')}")
+                return True
+            else:
+                print_error(f"Job update failed with status {response.status_code}")
+                try:
+                    error_data = response.json()
+                    print_error(f"  Error: {error_data.get('detail', error_data.get('error', response.text))}")
+                except:
+                    print_error(f"  Response: {response.text}")
+                return False
+                
+        except requests.exceptions.RequestException as e:
+            print_error(f"Job update request failed: {str(e)}")
+            return False
+    
+    def test_jobs_sync_from_s3(self) -> bool:
+        """Test jobs sync from S3 endpoint"""
+        print_step(7, "Testing /api/jobs/sync_from_s3 endpoint")
+        
+        if not self.token:
+            print_error("No token available. Please login first.")
+            return False
+        
+        try:
+            url = f"{self.base_url}{API_PREFIX}/jobs/sync_from_s3"
+            response = requests.post(
+                url,
+                headers=self.get_headers(),
+                timeout=120,  # Sync may take longer
+                verify=False
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                print_success(f"Jobs sync completed!")
+                print_info(f"  Synced: {data.get('synced', 0)}")
+                print_info(f"  Skipped: {data.get('skipped', 0)}")
+                print_info(f"  Total: {data.get('total', 0)}")
+                print_info(f"  Message: {data.get('message', '')}")
+                return True
+            else:
+                print_error(f"Jobs sync failed with status {response.status_code}")
+                try:
+                    error_data = response.json()
+                    print_error(f"  Error: {error_data.get('detail', response.text)}")
+                except:
+                    print_error(f"  Response: {response.text}")
+                return False
+                
+        except requests.exceptions.RequestException as e:
+            print_error(f"Jobs sync request failed: {str(e)}")
+            return False
+    
+    def test_resumes_upload_to_s3(self) -> bool:
+        """Test resumes upload to S3 endpoint"""
+        print_step(8, "Testing /api/resumes/upload_to_s3 endpoint")
+        
+        if not self.token:
+            print_error("No token available. Please login first.")
+            return False
+        
+        try:
+            # Create a dummy file content
+            file_content = b"Test resume content for API testing"
+            files = {
+                'file': ('test_resume.txt', file_content, 'text/plain')
+            }
+            
+            url = f"{self.base_url}{API_PREFIX}/resumes/upload_to_s3"
+            headers = {
+                "Authorization": f"Bearer {self.token}"
+            }
+            
+            response = requests.post(
+                url,
+                files=files,
+                headers=headers,
+                timeout=30,
+                verify=False
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                print_success(f"Resume uploaded to S3 successfully!")
+                print_info(f"  Resume ID: {data.get('resume_id')}")
+                print_info(f"  Name: {data.get('name')}")
+                print_info(f"  S3 URL: {data.get('s3_url')}")
+                return True
+            else:
+                print_error(f"Resume upload failed with status {response.status_code}")
+                try:
+                    error_data = response.json()
+                    print_error(f"  Error: {error_data.get('detail', response.text)}")
+                except:
+                    print_error(f"  Response: {response.text}")
+                return False
+                
+        except requests.exceptions.RequestException as e:
+            print_error(f"Resume upload request failed: {str(e)}")
+            return False
+    
     def run_all_tests(self, username: str, password: str):
         """Run all API tests"""
         print_header("API Test Suite - Resume Matching API")
@@ -313,7 +452,10 @@ class APITester:
             "login": False,
             "jobs_list": False,
             "resumes_list": False,
-            "job_create": False
+            "job_create": False,
+            "job_update": False,
+            "jobs_sync": False,
+            "resume_upload": False
         }
         
         # Test 1: Health check (no auth)
@@ -338,6 +480,44 @@ class APITester:
         
         # Test 5: Job create
         results["job_create"] = self.test_job_create()
+        
+        # Test 6: Job update (if we have a job)
+        if results["jobs_list"]:
+            # Try to get first job ID
+            try:
+                url = f"{self.base_url}{API_PREFIX}/jobs/list"
+                response = requests.get(
+                    url,
+                    headers=self.get_headers(),
+                    timeout=30,
+                    verify=False
+                )
+                if response.status_code == 200:
+                    data = response.json()
+                    jobs = data.get("jobs", [])
+                    if jobs:
+                        job_id = jobs[0].get("id") or jobs[0].get("job_id")
+                        if job_id:
+                            results["job_update"] = self.test_job_update(job_id)
+                        else:
+                            print_warning("  No job ID found, skipping update test")
+                    else:
+                        # Use the job we just created
+                        if results["job_create"]:
+                            # We need to get the job_id from create response
+                            # For now, skip if no jobs available
+                            print_warning("  No jobs available for update test")
+            except:
+                print_warning("  Failed to get job for update test")
+        else:
+            print_warning("  Skipping job update test (jobs list failed)")
+        
+        # Test 7: Jobs sync from S3 (optional, may take time)
+        print_info("\n  Note: Sync test may take a while and may fail if no jobs in S3")
+        results["jobs_sync"] = self.test_jobs_sync_from_s3()
+        
+        # Test 8: Resume upload to S3
+        results["resume_upload"] = self.test_resumes_upload_to_s3()
         
         # Print summary
         self.print_summary(results)
