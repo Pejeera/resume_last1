@@ -136,7 +136,7 @@ if ($dockerAvailable) {
     docker run --rm `
         -v "$volumePath" `
         -w $dockerWorkDir `
-        python:3.11-slim `
+        python:3.10-slim `
         /bin/bash -c "pip install -r requirements.txt -t $BuildDir/python/ --quiet"
 
     if ($LASTEXITCODE -ne 0) {
@@ -329,7 +329,7 @@ if ($foundInSource.Count -gt 0) {
 # ตรวจสอบ import statements ที่อาจมีปัญหา
 Write-Host "Checking for problematic import statements..." -ForegroundColor Gray
 $problematicImports = @()
-$sourceFiles = @("main.py", "lambda_function.py")
+$sourceFiles = @("main.py", "lambda_handler_mangum.py")
 if (Test-Path "app") {
     $sourceFiles += Get-ChildItem -Path "app" -Recurse -Filter "*.py" -ErrorAction SilentlyContinue | 
         Where-Object { $_.FullName -notmatch 'lambda-package|__pycache__' } | 
@@ -365,7 +365,7 @@ if ($problematicImports.Count -gt 0) {
 }
 
 # Copy source files with explicit exclusion of forbidden files
-$sources = @("main.py", "lambda_function.py")
+$sources = @("main.py", "lambda_handler_mangum.py")
 foreach ($src in $sources) {
     if (Test-Path $src) {
         Write-Host "Copying '$src' -> '$BuildDir'" -ForegroundColor Gray
@@ -453,7 +453,7 @@ if (Test-Path $appDir) {
 # (เช่น websockets/http.py, pydantic/typing.py ไม่ควรอยู่ที่ root)
 Write-Host "Checking for accidentally copied dependency files at root..." -ForegroundColor Gray
 $rootFiles = Get-ChildItem -Path $BuildDir -File -Filter "*.py" | Where-Object { 
-    $_.Name -notin @("lambda_function.py", "main.py")
+    $_.Name -notin @("lambda_handler_mangum.py", "main.py")
 }
 if ($rootFiles) {
     Write-Host "WARNING: Found unexpected .py files at root level:" -ForegroundColor Yellow
@@ -521,7 +521,7 @@ Write-Host "Checking root level files..." -ForegroundColor Gray
 $rootFiles = Get-ChildItem -Path $BuildDir -File | Select-Object -ExpandProperty Name
 Write-Host "Root level files: $($rootFiles -join ', ')" -ForegroundColor Gray
 
-$expectedRootFiles = @("lambda_function.py", "main.py")
+$expectedRootFiles = @("lambda_handler_mangum.py", "main.py")
 $unexpectedRootFiles = $rootFiles | Where-Object { $_ -notin $expectedRootFiles -and $_ -notlike "*.pyc" }
 
 if ($unexpectedRootFiles) {
@@ -664,7 +664,7 @@ Get-ChildItem -Recurse $BuildDir | `
 
 Write-Host ""
 Write-Host "Zip root should contain (at least):" -ForegroundColor Cyan
-Write-Host "- lambda_function.py" -ForegroundColor Gray
+Write-Host "- lambda_handler_mangum.py" -ForegroundColor Gray
 Write-Host "- main.py" -ForegroundColor Gray
 Write-Host "- app/ (FastAPI project)" -ForegroundColor Gray
 Write-Host "- python/ (dependencies - AWS will auto-add to sys.path)" -ForegroundColor Gray
@@ -750,7 +750,7 @@ Write-Host "Zip file: $ZipFile ($zipSizeMB MB)" -ForegroundColor Yellow
 Write-Host ""
 Write-Host "Next steps:" -ForegroundColor Cyan
 Write-Host "- Verify Lambda runtime: Python 3.11" -ForegroundColor Yellow
-Write-Host "- Verify handler: lambda_function.handler" -ForegroundColor Yellow
+Write-Host "- Verify handler: lambda_handler_mangum.lambda_handler" -ForegroundColor Yellow
 Write-Host "- Test API: /api/health via API Gateway" -ForegroundColor Yellow
 Write-Host "- Monitor CloudWatch logs for any runtime errors" -ForegroundColor Yellow
 
