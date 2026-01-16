@@ -131,13 +131,14 @@ elif settings.CORS_ORIGINS == ["*"]:
 
 # ใช้ cors_origins เสมอเพื่อให้รองรับ localhost:3000 และใช้ allow_credentials=True ได้
 # แต่ถ้าใช้ ["*"] จะไม่สามารถใช้ allow_credentials=True ได้
+# สำหรับ login endpoint ต้องใช้ allow_credentials=False เมื่อใช้ ["*"]
 if cors_origins == ["*"]:
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],  # อนุญาตทุก origin
-        allow_credentials=False,  # ไม่สามารถใช้ credentials กับ "*" ได้
-        allow_methods=["*"],  # อนุญาตทุก HTTP method
-        allow_headers=["*"],  # อนุญาตทุก header รวมถึง Authorization
+        allow_origins=["*"],  # อนุญาตทุก origin (รวมถึง Swagger UI จาก API Gateway)
+        allow_credentials=False,  # ไม่สามารถใช้ credentials กับ "*" ได้ แต่ login endpoint ไม่ต้องการ credentials
+        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],  # อนุญาตทุก HTTP method
+        allow_headers=["*"],  # อนุญาตทุก header รวมถึง Authorization, Content-Type
         expose_headers=["*"],  # เปิดเผยทุก header ใน response
     )
 else:
@@ -145,8 +146,8 @@ else:
         CORSMiddleware,
         allow_origins=cors_origins,  # รองรับ localhost:3000 และ origin อื่นๆ
         allow_credentials=True,
-        allow_methods=["*"],  # อนุญาตทุก HTTP method
-        allow_headers=["*"],  # อนุญาตทุก header รวมถึง Authorization
+        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],  # อนุญาตทุก HTTP method
+        allow_headers=["*"],  # อนุญาตทุก header รวมถึง Authorization, Content-Type
         expose_headers=["*"],  # เปิดเผยทุก header ใน response
     )
 

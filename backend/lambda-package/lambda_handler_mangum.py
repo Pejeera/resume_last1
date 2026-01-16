@@ -31,5 +31,66 @@ def lambda_handler(event, context):
     
     The FastAPI app can access these claims via request.scope["aws.event"]
     """
-    return handler(event, context)
+    # Detect HTTP method for CORS preflight
+    http_method = None
+    if 'requestContext' in event and 'http' in event['requestContext']:
+        # HTTP API v2.0 format
+        http_method = event['requestContext']['http'].get('method')
+    elif 'httpMethod' in event:
+        # REST API format
+        http_method = event['httpMethod']
+    
+    # Handle CORS preflight (OPTIONS) requests
+    if http_method == 'OPTIONS':
+        return {
+            "statusCode": 200,
+            "headers": {
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, PATCH",
+                "Access-Control-Allow-Headers": "Content-Type, Authorization, Accept, X-Requested-With",
+                "Access-Control-Expose-Headers": "*",
+                "Access-Control-Max-Age": "3600",
+                "Content-Type": "application/json"
+            },
+            "body": ""
+        }
+    
+    # Call Mangum handler
+    try:
+        response = handler(event, context)
+    except Exception as e:
+        # If handler fails, return error with CORS headers
+        return {
+            "statusCode": 500,
+            "headers": {
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, PATCH",
+                "Access-Control-Allow-Headers": "Content-Type, Authorization, Accept, X-Requested-With",
+                "Content-Type": "application/json"
+            },
+            "body": '{"error": "Internal server error"}'
+        }
+    
+    # Ensure CORS headers are present in all responses
+    if not isinstance(response, dict):
+        return response
+    
+    # Initialize headers if missing
+    if "headers" not in response:
+        response["headers"] = {}
+    
+    # CORS headers to add
+    cors_headers = {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, PATCH",
+        "Access-Control-Allow-Headers": "Content-Type, Authorization, Accept, X-Requested-With",
+        "Access-Control-Expose-Headers": "*"
+    }
+    
+    # Merge CORS headers (don't override if already set by FastAPI)
+    for key, value in cors_headers.items():
+        if key.lower() not in {k.lower() for k in response["headers"].keys()}:
+            response["headers"][key] = value
+    
+    return response
 

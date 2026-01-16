@@ -182,7 +182,10 @@ def response(status, body):
         "statusCode": status,
         "headers": {
             "Content-Type": "application/json",
-            "Access-Control-Allow-Origin": "*"
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, PATCH",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization, Accept, X-Requested-With",
+            "Access-Control-Expose-Headers": "*"
         },
         "body": json.dumps(body)
     }
@@ -225,8 +228,10 @@ def lambda_handler(event, context):
                 "headers": {
                     "Content-Type": "application/json",
                     "Access-Control-Allow-Origin": "*",
-                    "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
-                    "Access-Control-Allow-Headers": "Content-Type, Authorization"
+                    "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, PATCH",
+                    "Access-Control-Allow-Headers": "Content-Type, Authorization, Accept, X-Requested-With",
+                    "Access-Control-Expose-Headers": "*",
+                    "Access-Control-Max-Age": "3600"
                 },
                 "body": ""
             }
