@@ -364,9 +364,25 @@ app = FastAPI(
 )
 
 # CORS middleware - อนุญาตทุก origin เพื่อแก้ปัญหา CORS
+# สำหรับ local development: รองรับ localhost:3000 และ localhost:8000
+# สำหรับ production: ใช้ settings.CORS_ORIGINS
+
+# กำหนด CORS origins สำหรับ local development
+cors_origins = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://localhost:8000",
+    "http://127.0.0.1:8000",
+]
+
+# ถ้า settings.CORS_ORIGINS ไม่ใช่ ["*"] ให้เพิ่มเข้าไปด้วย
+if settings.CORS_ORIGINS and settings.CORS_ORIGINS != ["*"]:
+    cors_origins.extend(settings.CORS_ORIGINS)
+
+# ใช้ cors_origins เสมอเพื่อให้รองรับ localhost:3000 และใช้ allow_credentials=True ได้
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # อนุญาตทุก origin เพื่อแก้ปัญหา CORS
+    allow_origins=cors_origins,  # รองรับ localhost:3000 และ origin อื่นๆ
     allow_credentials=True,
     allow_methods=["*"],  # อนุญาตทุก HTTP method
     allow_headers=["*"],  # อนุญาตทุก header รวมถึง Authorization
