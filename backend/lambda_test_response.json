@@ -1,0 +1,1 @@
+{"errorMessage": "Unable to import module 'lambda_handler_mangum': No module named 'typing_extensions'", "errorType": "Runtime.ImportModuleError", "requestId": "", "stackTrace": []}

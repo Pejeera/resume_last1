@@ -35,15 +35,13 @@ class OpenSearchClient:
             endpoint = settings.OPENSEARCH_ENDPOINT
             # Remove protocol
             host = endpoint.replace('https://', '').replace('http://', '')
-            # Remove port if included in URL
+            # Remove port if included in URL (we'll always use 443)
             if ':' in host:
-                host, port_str = host.rsplit(':', 1)
-                try:
-                    port = int(port_str)
-                except ValueError:
-                    port = 443 if endpoint.startswith('https://') else 80
-            else:
-                port = 443 if endpoint.startswith('https://') else 80
+                host, _ = host.rsplit(':', 1)
+            
+            # ⚠️ CRITICAL: Always use port 443 for OpenSearch (HTTPS)
+            # Never use port 80 - it will cause authentication failures
+            port = 443
             
             # Extract region from endpoint or use configured region
             # OpenSearch endpoint format: search-xxx.REGION.es.amazonaws.com
@@ -62,38 +60,52 @@ class OpenSearchClient:
             else:
                 opensearch_region = settings.AWS_REGION
             
-            # Use credentials from settings (loaded from .env) instead of default boto3 session
-            # This ensures we use the credentials specified in .env file
-            if settings.AWS_ACCESS_KEY_ID and settings.AWS_SECRET_ACCESS_KEY:
-                # Use credentials from settings (.env)
-                awsauth = AWS4Auth(
-                    settings.AWS_ACCESS_KEY_ID,
-                    settings.AWS_SECRET_ACCESS_KEY,
-                    opensearch_region,
-                    'es'
-                )
-            else:
-                # Fallback to default boto3 session (for Lambda/EC2 with IAM roles)
-                credentials = boto3.Session().get_credentials()
-                if credentials:
+            # Use credentials from boto3 session (for Lambda/EC2 with IAM roles)
+            # This is the correct way for Lambda - uses IAM role credentials
+            credentials = boto3.Session().get_credentials()
+            if not credentials:
+                # Fallback to settings if no IAM role (for local development)
+                if settings.AWS_ACCESS_KEY_ID and settings.AWS_SECRET_ACCESS_KEY:
                     awsauth = AWS4Auth(
-                        credentials.access_key,
-                        credentials.secret_key,
+                        settings.AWS_ACCESS_KEY_ID,
+                        settings.AWS_SECRET_ACCESS_KEY,
                         opensearch_region,
-                        'es',
-                        session_token=credentials.token
+                        'es'
                     )
                 else:
-                    raise ValueError("No AWS credentials found. Please set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY in .env file or configure AWS credentials.")
+                    raise ValueError("No AWS credentials found. Please configure IAM role for Lambda or set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY in .env file.")
+            else:
+                # ✅ CORRECT: Use IAM role credentials with session_token (for Lambda)
+                awsauth = AWS4Auth(
+                    credentials.access_key,
+                    credentials.secret_key,
+                    opensearch_region,
+                    'es',
+                    session_token=credentials.token  # ⚠️ CRITICAL: Must include session_token for Lambda
+                )
             
+            # ✅ CORRECT: OpenSearch client configuration
+            # - port: 443 (always HTTPS)
+            # - use_ssl: True (always use SSL)
+            # - verify_certs: True (verify SSL certificates)
+            # - RequestsHttpConnection: Required for AWS4Auth
             self.client = OpenSearch(
-                hosts=[{'host': host, 'port': port}],
+                hosts=[{'host': host, 'port': 443}],  # ⚠️ CRITICAL: Always 443
                 http_auth=awsauth,
-                use_ssl=settings.OPENSEARCH_USE_SSL,
-                verify_certs=settings.OPENSEARCH_VERIFY_CERTS,
-                connection_class=RequestsHttpConnection
+                use_ssl=True,  # ⚠️ CRITICAL: Always True for AWS OpenSearch
+                verify_certs=True,  # ⚠️ CRITICAL: Always True for AWS OpenSearch
+                connection_class=RequestsHttpConnection  # ⚠️ CRITICAL: Required for AWS4Auth
             )
-            logger.info(f"OpenSearchClient initialized for endpoint: {settings.OPENSEARCH_ENDPOINT} (using IAM authentication)")
+            
+            # Log configuration for debugging
+            logger.info(f"OpenSearchClient initialized:")
+            logger.info(f"  - Endpoint: {settings.OPENSEARCH_ENDPOINT}")
+            logger.info(f"  - Host: {host}")
+            logger.info(f"  - Port: {self.client.transport.hosts[0]['port']}")  # Should be 443
+            logger.info(f"  - Region: {opensearch_region}")
+            logger.info(f"  - Use SSL: True")
+            logger.info(f"  - Verify Certs: True")
+            logger.info(f"  - Using IAM authentication with session_token")
     
     def _load_jobs_from_s3(self):
         """Load jobs from S3 into mock storage"""
@@ -166,11 +178,22 @@ class OpenSearchClient:
             return True
         
         try:
-            self.client.index(index=index_name, id=doc_id, body=document)
+            # ✅ CORRECT: Use client.index() method (not requests or urllib3)
+            # For OpenSearch 2.x+, use 'document' parameter
+            # For older versions, use 'body' parameter
+            # Try 'document' first (OpenSearch 2.x+), fallback to 'body' for compatibility
+            try:
+                self.client.index(index=index_name, id=doc_id, document=document)
+            except TypeError:
+                # Fallback for older OpenSearch client versions
+                self.client.index(index=index_name, id=doc_id, body=document)
+            
             logger.info(f"Indexed document {doc_id} in {index_name}")
             return True
         except Exception as e:
             logger.error(f"Error indexing document: {e}")
+            logger.error(f"Document ID: {doc_id}, Index: {index_name}")
+            logger.error(f"OpenSearch client hosts: {self.client.transport.hosts if hasattr(self.client, 'transport') else 'N/A'}")
             raise OpenSearchError(f"Failed to index document: {str(e)}")
     
     def vector_search(
@@ -206,6 +229,7 @@ class OpenSearchClient:
             return results_copy
         
         try:
+            # Try KNN search first
             query = {
                 "size": top_k,
                 "query": {
@@ -232,17 +256,93 @@ class OpenSearchClient:
                     "filter": filters
                 }
             
-            response = self.client.search(index=index_name, body=query)
-            
-            results = []
-            for hit in response['hits']['hits']:
-                result = hit['_source']
-                result['_score'] = hit['_score']
-                result['_id'] = hit['_id']
-                results.append(result)
-            
-            logger.info(f"Vector search returned {len(results)} results")
-            return results
+            try:
+                response = self.client.search(index=index_name, body=query)
+                
+                results = []
+                for hit in response['hits']['hits']:
+                    result = hit['_source']
+                    result['_score'] = hit['_score']
+                    result['_id'] = hit['_id']
+                    results.append(result)
+                
+                logger.info(f"Vector search returned {len(results)} results")
+                return results
+                
+            except Exception as knn_error:
+                error_msg = str(knn_error)
+                # If ANN structure not built, fallback to script_score query
+                if "not built for ANN search" in error_msg or "ANN" in error_msg:
+                    logger.warning(f"ANN structure not ready, using fallback script_score query")
+                    
+                    # Fallback: Use script_score to calculate cosine similarity manually
+                    import math
+                    
+                    # Calculate query vector norm
+                    query_norm = math.sqrt(sum(x * x for x in query_vector))
+                    
+                    # Script to calculate cosine similarity
+                    script_source = f"""
+                    double dotProduct = 0.0;
+                    double docNorm = 0.0;
+                    if (doc['embeddings'].size() != params.queryVector.size()) {{
+                        return 0.0;
+                    }}
+                    for (int i = 0; i < doc['embeddings'].size(); i++) {{
+                        dotProduct += doc['embeddings'][i] * params.queryVector[i];
+                        docNorm += doc['embeddings'][i] * doc['embeddings'][i];
+                    }}
+                    double docNormSqrt = Math.sqrt(docNorm);
+                    double queryNorm = params.queryNorm;
+                    if (docNormSqrt == 0.0 || queryNorm == 0.0) {{
+                        return 0.0;
+                    }}
+                    return dotProduct / (docNormSqrt * queryNorm);
+                    """
+                    
+                    fallback_query = {
+                        "size": top_k,
+                        "query": {
+                            "script_score": {
+                                "query": {"match_all": {}},
+                                "script": {
+                                    "source": script_source,
+                                    "params": {
+                                        "queryVector": query_vector,
+                                        "queryNorm": query_norm
+                                    }
+                                }
+                            }
+                        },
+                        "_source": True
+                    }
+                    
+                    if filters:
+                        fallback_query["query"]["script_score"]["query"] = {"bool": {"filter": filters}}
+                    
+                    try:
+                        response = self.client.search(index=index_name, body=fallback_query)
+                        
+                        results = []
+                        for hit in response['hits']['hits']:
+                            result = hit['_source']
+                            result['_score'] = hit['_score']
+                            result['_id'] = hit['_id']
+                            results.append(result)
+                        
+                        # Sort by score descending
+                        results.sort(key=lambda x: x.get('_score', 0), reverse=True)
+                        results = results[:top_k]
+                        
+                        logger.info(f"Fallback vector search returned {len(results)} results")
+                        return results
+                        
+                    except Exception as fallback_error:
+                        logger.error(f"Fallback vector search also failed: {fallback_error}")
+                        raise OpenSearchError(f"Vector search failed (both KNN and fallback): {str(fallback_error)}")
+                else:
+                    # Other error, raise it
+                    raise
             
         except Exception as e:
             logger.error(f"Error in vector search: {e}")

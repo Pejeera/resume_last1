@@ -223,22 +223,30 @@ class S3Client:
         
         try:
             # List all objects in resumes/jobs/ prefix
+            logger.info(f"Loading jobs from S3: bucket={settings.S3_BUCKET_NAME}, prefix={jobs_prefix}")
             jobs_data = []
             paginator = self.client.get_paginator('list_objects_v2')
             
+            page_count = 0
             for page in paginator.paginate(Bucket=settings.S3_BUCKET_NAME, Prefix=jobs_prefix):
+                page_count += 1
                 if 'Contents' not in page:
+                    logger.info(f"Page {page_count}: No objects found")
                     continue
+                
+                logger.info(f"Page {page_count}: Found {len(page['Contents'])} objects")
                     
                 for obj in page['Contents']:
                     s3_key = obj['Key']
                     
                     # Only process .json files
                     if not s3_key.endswith('.json'):
+                        logger.debug(f"Skipping non-JSON file: {s3_key}")
                         continue
                     
                     try:
                         # Get and parse JSON file
+                        logger.debug(f"Loading job file: {s3_key}")
                         response = self.client.get_object(
                             Bucket=settings.S3_BUCKET_NAME,
                             Key=s3_key
@@ -249,34 +257,40 @@ class S3Client:
                         # Each file should contain 1 job object (dict)
                         if isinstance(job_data, dict):
                             jobs_data.append(job_data)
+                            logger.debug(f"Loaded job from {s3_key}: {job_data.get('title', 'N/A')}")
                         elif isinstance(job_data, list):
                             # If file contains array, add all items
                             jobs_data.extend(job_data)
+                            logger.debug(f"Loaded {len(job_data)} jobs from array in {s3_key}")
                         else:
-                            logger.warning(f"Invalid job data format in {s3_key}: expected dict or list")
+                            logger.warning(f"Invalid job data format in {s3_key}: expected dict or list, got {type(job_data)}")
                             
                     except json.JSONDecodeError as e:
                         logger.warning(f"Failed to parse JSON from {s3_key}: {e}")
                         continue
                     except ClientError as e:
-                        logger.warning(f"Failed to read {s3_key}: {e}")
+                        error_code = e.response.get('Error', {}).get('Code', '')
+                        logger.warning(f"Failed to read {s3_key} (Error: {error_code}): {e}")
                         continue
                     except Exception as e:
-                        logger.warning(f"Error processing {s3_key}: {e}")
+                        logger.warning(f"Error processing {s3_key}: {e}", exc_info=True)
                         continue
             
-            logger.info(f"Loaded {len(jobs_data)} jobs from S3: {jobs_prefix}")
+            logger.info(f"Loaded {len(jobs_data)} jobs from S3: {jobs_prefix} (processed {page_count} pages)")
             return jobs_data
             
         except ClientError as e:
             error_code = e.response.get('Error', {}).get('Code', '')
-            if error_code == 'NoSuchBucket' or error_code == 'AccessDenied':
-                logger.warning(f"Cannot access S3 bucket or prefix {jobs_prefix}: {e}")
+            error_message = e.response.get('Error', {}).get('Message', str(e))
+            if error_code == 'NoSuchBucket':
+                logger.error(f"Bucket does not exist: {settings.S3_BUCKET_NAME} (Error: {error_code})")
+            elif error_code == 'AccessDenied':
+                logger.error(f"Access denied to S3 bucket: {settings.S3_BUCKET_NAME}, prefix: {jobs_prefix} (Error: {error_code})")
             else:
-                logger.error(f"S3 load jobs error: {e}")
+                logger.error(f"S3 load jobs error (Code: {error_code}, Message: {error_message}): {e}")
             return []
         except Exception as e:
-            logger.error(f"Unexpected error loading jobs: {e}")
+            logger.error(f"Unexpected error loading jobs: {e}", exc_info=True)
             return []
 
 

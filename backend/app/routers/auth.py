@@ -25,88 +25,20 @@ COGNITO_REGION = "ap-southeast-2"
 
 
 class LoginRequest(BaseModel):
-    """Request model สำหรับการ login"""
-    username: str = Field(..., description="Email หรือ username สำหรับ login")
-    password: str = Field(..., description="Password สำหรับ login")
+    username: str
+    password: str
 
 
 class LoginResponse(BaseModel):
-    """Response model สำหรับการ login"""
-    idToken: str = Field(..., description="JWT ID Token สำหรับใช้ใน Authorization header")
-    accessToken: str = Field(..., description="Access Token จาก Cognito")
-    refreshToken: Optional[str] = Field(None, description="Refresh Token สำหรับ refresh token")
-    email: str = Field(..., description="Email ของผู้ใช้")
-    message: str = Field(..., description="ข้อความแจ้งเตือน")
+    idToken: str
+    accessToken: str
+    refreshToken: Optional[str] = None
+    email: str
+    message: str
 
 
 @router.post("/login", response_model=LoginResponse)
 async def login(request: LoginRequest):
-    """
-    🔐 Login เพื่อรับ JWT Token
-    
-    ใช้ endpoint นี้เพื่อยืนยันตัวตนและรับ JWT token จาก AWS Cognito
-    
-    ---
-    
-    ## 📋 ขั้นตอนการใช้งานแบบละเอียด:
-    
-    ### 1. เรียกใช้ Login Endpoint
-    - ใส่ `username` (email) และ `password` ใน request body
-    - กด "Try it out" และ "Execute"
-    
-    ### 2. รับ Token จาก Response
-    - Response จะมี `idToken`, `accessToken`, และ `refreshToken`
-    - **คัดลอก `idToken`** (ใช้ตัวนี้สำหรับ API calls)
-    
-    ### 3. Authorize ใน Swagger UI
-    - คลิกปุ่ม **"Authorize"** 🔒 ที่มุมขวาบนของหน้า Swagger UI
-    - ในช่อง "Value" ให้วาง `idToken` ที่คัดลอกมา
-    - คลิก **"Authorize"** และ **"Close"**
-    - ตอนนี้ทุก API call จะมี Authorization header อัตโนมัติ
-    
-    ### 4. ใช้ API อื่นๆ
-    - ตอนนี้สามารถใช้ API endpoints อื่นๆ ได้แล้ว
-    - ไม่ต้องใส่ token เอง เพราะ Swagger UI จะใส่ให้อัตโนมัติ
-    
-    ---
-    
-    ## 📝 ตัวอย่าง Request:
-    
-    ```json
-    {
-      "username": "user@example.com",
-      "password": "YourPassword123"
-    }
-    ```
-    
-    ## 📝 ตัวอย่าง Response:
-    
-    ```json
-    {
-      "idToken": "eyJraWQiOiJcL0p...",
-      "accessToken": "eyJraWQiOiJcL0p...",
-      "refreshToken": "eyJjdHkiOiJKV1QiLCJlbmMiOiJBMjU2R0NNIi...",
-      "email": "user@example.com",
-      "message": "Login สำเร็จ! คัดลอก idToken ไปใส่ในปุ่ม Authorize ใน Swagger UI"
-    }
-    ```
-    
-    ---
-    
-    ## ⚠️ ข้อผิดพลาดที่อาจเกิดขึ้น:
-    
-    - **401 Unauthorized**: Username หรือ password ไม่ถูกต้อง
-    - **403 Forbidden**: บัญชีผู้ใช้ยังไม่ได้ยืนยัน (ต้องยืนยันอีเมลก่อน)
-    - **404 Not Found**: ไม่พบผู้ใช้ในระบบ
-    
-    ---
-    
-    ## 💡 Tips:
-    
-    - Token จะหมดอายุหลังจากเวลาหนึ่ง (ตามที่ Cognito กำหนด)
-    - ถ้า token หมดอายุ ให้ login ใหม่
-    - ใช้ `refreshToken` เพื่อ refresh token โดยไม่ต้อง login ใหม่ (ต้อง implement endpoint เพิ่ม)
-    """
     try:
         if not request.username or not request.password:
             raise HTTPException(

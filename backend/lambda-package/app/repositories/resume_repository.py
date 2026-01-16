@@ -5,6 +5,7 @@ Data access layer for resume operations
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 import uuid
+from botocore.exceptions import ClientError
 
 from app.clients.opensearch_client import opensearch_client
 from app.clients.s3_client import s3_client
@@ -224,6 +225,169 @@ class ResumeRepository:
             
         except Exception as e:
             logger.error(f"Error getting resume from S3: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return None
+    
+    def get_resume_from_s3_by_key(self, s3_key: str) -> Optional[Dict[str, Any]]:
+        """
+        Get resume from S3 by S3 key and process it (extract text, generate embedding)
+        
+        This is used when we have the S3 key directly (e.g., from frontend).
+        """
+        try:
+            from app.core.config import settings
+            
+            logger.info(f"Getting resume from S3 by key: {s3_key}")
+            
+            # First, try to find in OpenSearch by s3_key
+            if not settings.USE_MOCK:
+                try:
+                    # Search OpenSearch for document with this s3_key
+                    # s3_key is a keyword field, so use term query
+                    search_query = {
+                        "query": {
+                            "term": {
+                                "s3_key": s3_key
+                            }
+                        },
+                        "size": 1
+                    }
+                    response = self.opensearch.client.search(
+                        index=self.INDEX_NAME,
+                        body=search_query
+                    )
+                    
+                    if response['hits']['total']['value'] > 0:
+                        hit = response['hits']['hits'][0]
+                        resume = hit['_source']
+                        resume['_id'] = hit['_id']
+                        # Verify s3_key matches exactly
+                        if resume.get('s3_key') == s3_key:
+                            logger.info(f"Found resume in OpenSearch by s3_key: {s3_key}, resume_id: {resume.get('id')}")
+                            return resume
+                        else:
+                            logger.warning(f"Found resume but s3_key doesn't match: {resume.get('s3_key')} != {s3_key}")
+                except Exception as search_error:
+                    logger.warning(f"Failed to search OpenSearch by s3_key: {search_error}")
+                    import traceback
+                    logger.debug(traceback.format_exc())
+            
+            # If not found in OpenSearch, get from S3 and process
+            logger.info(f"Resume not in OpenSearch, processing from S3: {s3_key}")
+            
+            # Use s3_client if available, otherwise use boto3 directly
+            if hasattr(self.s3, 'client') and self.s3.client:
+                s3_client_boto = self.s3.client
+            else:
+                import boto3
+                s3_client_boto = boto3.client('s3', region_name=settings.AWS_REGION)
+            
+            file_name = s3_key.split('/')[-1]
+            
+            # Download file from S3
+            try:
+                file_obj = s3_client_boto.get_object(
+                    Bucket=settings.S3_BUCKET_NAME,
+                    Key=s3_key
+                )
+                file_content = file_obj['Body'].read()
+                logger.info(f"Downloaded file from S3: {s3_key}, size: {len(file_content)} bytes")
+            except ClientError as e:
+                error_code = e.response.get('Error', {}).get('Code', '')
+                error_msg = e.response.get('Error', {}).get('Message', str(e))
+                logger.error(f"Failed to download file from S3: {s3_key}, Error: {error_code}, Message: {error_msg}")
+                if error_code == 'NoSuchKey':
+                    logger.error(f"File does not exist in S3: {s3_key}")
+                elif error_code == 'AccessDenied':
+                    logger.error(f"Access denied to S3 file: {s3_key}")
+                return None
+            except Exception as e:
+                logger.error(f"Failed to download file from S3: {s3_key}, error: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+                return None
+            
+            # Get resume_id from metadata if available
+            resume_id = None
+            try:
+                obj_metadata = s3_client_boto.head_object(
+                    Bucket=settings.S3_BUCKET_NAME,
+                    Key=s3_key
+                )
+                metadata = obj_metadata.get('Metadata', {})
+                resume_id = metadata.get('resume_id', '')
+            except Exception as meta_error:
+                logger.warning(f"Failed to get metadata for {s3_key}: {meta_error}")
+            
+            # If no resume_id in metadata, generate one from filename
+            if not resume_id:
+                # Generate a stable resume_id from filename
+                import hashlib
+                resume_id = hashlib.md5(s3_key.encode()).hexdigest()
+                logger.info(f"No resume_id in metadata, generated ID from s3_key: {resume_id}")
+            
+            # Extract text
+            logger.info(f"Extracting text from file: {file_name}")
+            try:
+                text = self.file_processor.extract_text(file_content, file_name)
+                
+                if not text or len(text.strip()) == 0:
+                    logger.error(f"Failed to extract text from file: {file_name} (empty result)")
+                    # For .txt files, try reading as plain text
+                    if file_name.lower().endswith('.txt'):
+                        try:
+                            text = file_content.decode('utf-8')
+                            logger.info(f"Read .txt file as plain text, length: {len(text)}")
+                        except:
+                            logger.error(f"Failed to decode .txt file as UTF-8")
+                    if not text or len(text.strip()) == 0:
+                        return None
+                
+                logger.info(f"Extracted text length: {len(text)} characters")
+            except Exception as e:
+                logger.error(f"Error extracting text from file: {file_name}, error: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+                return None
+            
+            # Generate embedding
+            logger.info(f"Generating embedding for resume: {resume_id}")
+            try:
+                embedding = self.bedrock.generate_embedding(text)
+                logger.info(f"Generated embedding dimension: {len(embedding)}")
+            except Exception as e:
+                logger.error(f"Error generating embedding for resume: {resume_id}, error: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+                return None
+            
+            # Create document
+            document = {
+                "id": resume_id,
+                "name": file_name,
+                "text_excerpt": text[:500],
+                "full_text": text,
+                "embeddings": embedding,
+                "metadata": {},
+                "s3_url": f"s3://{settings.S3_BUCKET_NAME}/{s3_key}",
+                "s3_key": s3_key,
+                "created_at": datetime.utcnow().isoformat()
+            }
+            
+            # Index in OpenSearch
+            logger.info(f"Indexing resume {resume_id} in OpenSearch")
+            self.opensearch.index_document(
+                index_name=self.INDEX_NAME,
+                doc_id=resume_id,
+                document=document
+            )
+            
+            logger.info(f"Successfully processed and indexed resume {resume_id} from S3 key: {s3_key}")
+            return document
+            
+        except Exception as e:
+            logger.error(f"Error getting resume from S3 by key: {e}")
             import traceback
             logger.error(traceback.format_exc())
             return None
