@@ -53,23 +53,43 @@ class ResumeRepository:
             # 2. Extract text
             text = self.file_processor.extract_text(file_content, file_name)
             
-            # 3. Generate embedding
-            embedding = self.bedrock.generate_embedding(text)
+            # 3. Extract and categorize using LLM
+            logger.info(f"Extracting categories from resume {resume_id} using LLM")
+            categorized = self.bedrock.extract_resume_categories(text)
             
-            # 4. Create document
+            # 4. Generate embeddings for each category separately
+            structured_text = categorized.get("structured_text", text)
+            logger.info(f"Generating category embeddings for resume {resume_id}")
+            category_embeddings = self.bedrock.generate_category_embeddings(categorized)
+            
+            # Also generate overall embedding from structured text (for backward compatibility)
+            logger.info(f"Generating overall embedding for resume {resume_id} using structured text (length: {len(structured_text)})")
+            overall_embedding = self.bedrock.generate_embedding(structured_text)
+            
+            # 5. Create document with categorized information
             document = {
                 "id": resume_id,
                 "name": file_name,
-                "text_excerpt": text[:500],  # First 500 chars
+                "text_excerpt": text[:500],  # First 500 chars of original text
                 "full_text": text,
-                "embeddings": embedding,
+                "embeddings": overall_embedding,  # Overall embedding (for backward compatibility)
+                "category_embeddings": category_embeddings,  # Embeddings separated by category
+                "categories": {
+                    "personal_info": categorized.get("personal_info", {}),
+                    "summary": categorized.get("summary", ""),
+                    "skills": categorized.get("skills", []),
+                    "experience": categorized.get("experience", []),
+                    "education": categorized.get("education", []),
+                    "languages": categorized.get("languages", [])
+                },
+                "structured_text": structured_text,  # Text used for overall embedding
                 "metadata": metadata or {},
                 "s3_url": upload_result["s3_url"],
                 "s3_key": upload_result["s3_key"],
                 "created_at": datetime.utcnow().isoformat()
             }
             
-            # 5. Index in OpenSearch
+            # 6. Index in OpenSearch
             self.opensearch.index_document(
                 index_name=self.INDEX_NAME,
                 doc_id=resume_id,
@@ -81,7 +101,8 @@ class ResumeRepository:
                 "resume_id": resume_id,
                 "s3_url": upload_result["s3_url"],
                 "name": file_name,
-                "created_at": document["created_at"]
+                "created_at": document["created_at"],
+                "categories": document.get("categories", {})
             }
             
         except Exception as e:
@@ -197,23 +218,43 @@ class ResumeRepository:
             # 3. Extract text
             text = self.file_processor.extract_text(file_content, file_name)
             
-            # 4. Generate embedding
-            embedding = self.bedrock.generate_embedding(text)
+            # 4. Extract and categorize using LLM
+            logger.info(f"Extracting categories from resume {resume_id} using LLM")
+            categorized = self.bedrock.extract_resume_categories(text)
             
-            # 5. Create document
+            # 5. Generate embeddings for each category separately
+            structured_text = categorized.get("structured_text", text)
+            logger.info(f"Generating category embeddings for resume {resume_id}")
+            category_embeddings = self.bedrock.generate_category_embeddings(categorized)
+            
+            # Also generate overall embedding from structured text (for backward compatibility)
+            logger.info(f"Generating overall embedding for resume {resume_id} using structured text (length: {len(structured_text)})")
+            overall_embedding = self.bedrock.generate_embedding(structured_text)
+            
+            # 6. Create document with categorized information
             document = {
                 "id": resume_id,
                 "name": file_name,
                 "text_excerpt": text[:500],
                 "full_text": text,
-                "embeddings": embedding,
+                "embeddings": overall_embedding,  # Overall embedding (for backward compatibility)
+                "category_embeddings": category_embeddings,  # Embeddings separated by category
+                "categories": {
+                    "personal_info": categorized.get("personal_info", {}),
+                    "summary": categorized.get("summary", ""),
+                    "skills": categorized.get("skills", []),
+                    "experience": categorized.get("experience", []),
+                    "education": categorized.get("education", []),
+                    "languages": categorized.get("languages", [])
+                },
+                "structured_text": structured_text,  # Text used for overall embedding
                 "metadata": {},
                 "s3_url": f"s3://{settings.S3_BUCKET_NAME}/{s3_key}",
                 "s3_key": s3_key,
                 "created_at": datetime.utcnow().isoformat()
             }
             
-            # 6. Index in OpenSearch
+            # 7. Index in OpenSearch
             self.opensearch.index_document(
                 index_name=self.INDEX_NAME,
                 doc_id=resume_id,
@@ -351,24 +392,65 @@ class ResumeRepository:
                 logger.error(traceback.format_exc())
                 return None
             
-            # Generate embedding
-            logger.info(f"Generating embedding for resume: {resume_id}")
+            # Extract and categorize using LLM
+            logger.info(f"Extracting categories from resume {resume_id} using LLM")
             try:
-                embedding = self.bedrock.generate_embedding(text)
-                logger.info(f"Generated embedding dimension: {len(embedding)}")
+                categorized = self.bedrock.extract_resume_categories(text)
             except Exception as e:
-                logger.error(f"Error generating embedding for resume: {resume_id}, error: {e}")
+                logger.error(f"Error extracting categories for resume: {resume_id}, error: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+                # Fallback: use original text
+                categorized = {
+                    "personal_info": {},
+                    "summary": "",
+                    "skills": [],
+                    "experience": [],
+                    "education": [],
+                    "languages": [],
+                    "structured_text": text[:2048]
+                }
+            
+            # Generate embeddings for each category separately
+            structured_text = categorized.get("structured_text", text)
+            logger.info(f"Generating category embeddings for resume: {resume_id}")
+            try:
+                category_embeddings = self.bedrock.generate_category_embeddings(categorized)
+                logger.info(f"Generated embeddings for categories: {list(category_embeddings.keys())}")
+            except Exception as e:
+                logger.error(f"Error generating category embeddings for resume: {resume_id}, error: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+                category_embeddings = {}
+            
+            # Also generate overall embedding from structured text (for backward compatibility)
+            logger.info(f"Generating overall embedding for resume: {resume_id} using structured text (length: {len(structured_text)})")
+            try:
+                overall_embedding = self.bedrock.generate_embedding(structured_text)
+                logger.info(f"Generated overall embedding dimension: {len(overall_embedding)}")
+            except Exception as e:
+                logger.error(f"Error generating overall embedding for resume: {resume_id}, error: {e}")
                 import traceback
                 logger.error(traceback.format_exc())
                 return None
             
-            # Create document
+            # Create document with categorized information
             document = {
                 "id": resume_id,
                 "name": file_name,
                 "text_excerpt": text[:500],
                 "full_text": text,
-                "embeddings": embedding,
+                "embeddings": overall_embedding,  # Overall embedding (for backward compatibility)
+                "category_embeddings": category_embeddings,  # Embeddings separated by category
+                "categories": {
+                    "personal_info": categorized.get("personal_info", {}),
+                    "summary": categorized.get("summary", ""),
+                    "skills": categorized.get("skills", []),
+                    "experience": categorized.get("experience", []),
+                    "education": categorized.get("education", []),
+                    "languages": categorized.get("languages", [])
+                },
+                "structured_text": structured_text,  # Text used for overall embedding
                 "metadata": {},
                 "s3_url": f"s3://{settings.S3_BUCKET_NAME}/{s3_key}",
                 "s3_key": s3_key,

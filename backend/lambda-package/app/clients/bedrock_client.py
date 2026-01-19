@@ -266,6 +266,356 @@ class BedrockClient:
             logger.error(f"Bedrock rerank error: {e}")
             raise RerankError(f"Failed to rerank candidates: {str(e)}")
     
+    def extract_resume_categories(self, resume_text: str) -> Dict[str, Any]:
+        """
+        Extract and categorize resume information using LLM (Nova Lite)
+        
+        Args:
+            resume_text: Full text extracted from resume
+            
+        Returns:
+            Dictionary with categorized resume information
+        """
+        try:
+            # Build prompt for categorization
+            prompt = self._build_extract_prompt(resume_text)
+            
+            # Nova Lite format: content must be an array with text object
+            body = json.dumps({
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "text": prompt
+                            }
+                        ]
+                    }
+                ],
+                "inferenceConfig": {
+                    "maxTokens": 2000,
+                    "temperature": 0.2,  # Lower temperature for more consistent extraction
+                    "topP": 0.9
+                }
+            })
+            
+            # Use rerank_client which uses Nova Lite in us-east-1
+            rerank_client = getattr(self, 'rerank_client', self.client)
+            response = rerank_client.invoke_model(
+                modelId=settings.BEDROCK_RERANK_MODEL,
+                body=body,
+                contentType="application/json",
+                accept="application/json"
+            )
+            
+            # Parse Nova Lite response format
+            response_body = json.loads(response['body'].read())
+            
+            # Try different response formats
+            result_text = None
+            
+            # Format 1: Nova Lite format {"output": {"message": {"content": [{"text": "..."}]}}}
+            output = response_body.get('output', {})
+            if output:
+                message = output.get('message', {})
+                if message:
+                    content = message.get('content', [])
+                    if content and len(content) > 0:
+                        result_text = content[0].get('text', '')
+            
+            # Format 2: Direct content format
+            if not result_text:
+                content = response_body.get('content', [])
+                if content and len(content) > 0:
+                    result_text = content[0].get('text', '')
+            
+            # Format 3: Direct text field
+            if not result_text:
+                result_text = response_body.get('text', '')
+            
+            if not result_text or result_text.strip() == '':
+                logger.error(f"Empty response text. Full response: {response_body}")
+                # Fallback: return basic structure with original text
+                return {
+                    "personal_info": {},
+                    "summary": "",
+                    "skills": [],
+                    "experience": [],
+                    "education": [],
+                    "languages": [],
+                    "structured_text": resume_text[:2048]  # Use original text for embedding
+                }
+            
+            # Clean up markdown code blocks if present
+            result_text = result_text.strip()
+            if result_text.startswith('```json'):
+                result_text = result_text[7:]
+                if result_text.endswith('```'):
+                    result_text = result_text[:-3]
+            elif result_text.startswith('```'):
+                result_text = result_text[3:]
+                if result_text.endswith('```'):
+                    result_text = result_text[:-3]
+            result_text = result_text.strip()
+            
+            # Try to parse JSON from text
+            try:
+                result_json = json.loads(result_text)
+            except json.JSONDecodeError as e:
+                logger.error(f"Failed to parse JSON from response. Text: {result_text[:500]}")
+                # Fallback: return basic structure with original text
+                return {
+                    "personal_info": {},
+                    "summary": "",
+                    "skills": [],
+                    "experience": [],
+                    "education": [],
+                    "languages": [],
+                    "structured_text": resume_text[:2048]
+                }
+            
+            # Validate and format results
+            categorized = self._parse_extract_results(result_json, resume_text)
+            logger.info(f"Extracted categories from resume")
+            return categorized
+                
+        except (ClientError, json.JSONDecodeError, KeyError) as e:
+            logger.error(f"Bedrock extract categories error: {e}")
+            # Fallback: return basic structure with original text
+            return {
+                "personal_info": {},
+                "summary": "",
+                "skills": [],
+                "experience": [],
+                "education": [],
+                "languages": [],
+                "structured_text": resume_text[:2048]
+            }
+    
+    def _build_extract_prompt(self, resume_text: str) -> str:
+        """Build prompt for extracting resume categories"""
+        # Truncate resume text if too long (Nova has token limits)
+        max_text_length = 4000  # Leave room for prompt
+        if len(resume_text) > max_text_length:
+            resume_text = resume_text[:max_text_length] + "..."
+        
+        prompt = f"""คุณเป็น AI ที่เชี่ยวชาญในการแยกประเภทและจัดโครงสร้างข้อมูลจาก Resume/CV
+
+**Resume Text:**
+{resume_text}
+
+**งานของคุณ:**
+แยกประเภทและจัดโครงสร้างข้อมูลจาก Resume ให้เป็น JSON ตามรูปแบบด้านล่าง
+
+**ข้อกำหนด:**
+- แยกข้อมูลให้ครบถ้วนและถูกต้อง
+- ถ้าไม่พบข้อมูลในส่วนใด ให้ใช้ค่า null หรือ array ว่าง
+- ใช้ภาษาไทยหรือภาษาอังกฤษตามที่พบใน Resume
+- สำหรับ structured_text ให้สร้างข้อความที่เหมาะสำหรับการทำ embedding โดยรวมข้อมูลสำคัญทั้งหมด
+
+**รูปแบบผลลัพธ์ (JSON):**
+{{
+  "personal_info": {{
+    "name": "ชื่อ-นามสกุล",
+    "email": "email@example.com",
+    "phone": "เบอร์โทรศัพท์",
+    "location": "ที่อยู่/เมือง"
+  }},
+  "summary": "สรุปประวัติหรือ objective",
+  "skills": ["skill1", "skill2", "skill3"],
+  "experience": [
+    {{
+      "title": "ตำแหน่งงาน",
+      "company": "ชื่อบริษัท",
+      "duration": "ระยะเวลา (เช่น 2020-2024)",
+      "description": "รายละเอียดงาน"
+    }}
+  ],
+  "education": [
+    {{
+      "degree": "ระดับการศึกษา",
+      "institution": "สถาบันการศึกษา",
+      "year": "ปีที่จบ"
+    }}
+  ],
+  "languages": ["ภาษา1", "ภาษา2"],
+  "structured_text": "ข้อความที่รวมข้อมูลสำคัญทั้งหมดสำหรับ embedding (ควรมีชื่อ, ทักษะ, ประสบการณ์, การศึกษา)"
+}}
+
+กรุณาให้ผลลัพธ์เป็น JSON เท่านั้น:"""
+        
+        return prompt
+    
+    def _build_structured_text_by_category(self, categorized: Dict[str, Any]) -> Dict[str, str]:
+        """
+        Build structured text for each category separately
+        
+        Returns:
+            Dictionary with structured text for each category
+        """
+        structured_texts = {}
+        
+        # Personal info
+        personal_info = categorized.get("personal_info", {})
+        if personal_info:
+            personal_parts = []
+            if personal_info.get("name"):
+                personal_parts.append(f"Name: {personal_info['name']}")
+            if personal_info.get("email"):
+                personal_parts.append(f"Email: {personal_info['email']}")
+            if personal_info.get("phone"):
+                personal_parts.append(f"Phone: {personal_info['phone']}")
+            if personal_info.get("location"):
+                personal_parts.append(f"Location: {personal_info['location']}")
+            if personal_parts:
+                structured_texts["personal_info"] = "\n".join(personal_parts)
+        
+        # Summary
+        summary = categorized.get("summary", "")
+        if summary:
+            structured_texts["summary"] = summary
+        
+        # Skills
+        skills = categorized.get("skills", [])
+        if skills:
+            structured_texts["skills"] = ", ".join(skills)
+        
+        # Experience
+        experience = categorized.get("experience", [])
+        if experience:
+            exp_parts = []
+            for exp in experience:
+                exp_text = f"{exp.get('title', '')} at {exp.get('company', '')}"
+                if exp.get('duration'):
+                    exp_text += f" ({exp['duration']})"
+                if exp.get('description'):
+                    exp_text += f": {exp['description']}"
+                exp_parts.append(exp_text)
+            if exp_parts:
+                structured_texts["experience"] = " | ".join(exp_parts)
+        
+        # Education
+        education = categorized.get("education", [])
+        if education:
+            edu_parts = []
+            for edu in education:
+                edu_text = f"{edu.get('degree', '')} from {edu.get('institution', '')}"
+                if edu.get('year'):
+                    edu_text += f" ({edu['year']})"
+                edu_parts.append(edu_text)
+            if edu_parts:
+                structured_texts["education"] = " | ".join(edu_parts)
+        
+        # Languages
+        languages = categorized.get("languages", [])
+        if languages:
+            structured_texts["languages"] = ", ".join(languages)
+        
+        # Limit each text to 2048 chars for embedding
+        for key in structured_texts:
+            if len(structured_texts[key]) > 2048:
+                structured_texts[key] = structured_texts[key][:2048]
+        
+        return structured_texts
+    
+    def generate_category_embeddings(self, categorized: Dict[str, Any]) -> Dict[str, List[float]]:
+        """
+        Generate embeddings for each category separately
+        
+        Args:
+            categorized: Dictionary with categorized resume information
+            
+        Returns:
+            Dictionary with embeddings for each category
+        """
+        embeddings = {}
+        structured_texts = self._build_structured_text_by_category(categorized)
+        
+        for category, text in structured_texts.items():
+            try:
+                embedding = self.generate_embedding(text)
+                embeddings[category] = embedding
+                logger.info(f"Generated embedding for category '{category}' (text length: {len(text)})")
+            except Exception as e:
+                logger.error(f"Error generating embedding for category '{category}': {e}")
+                # Continue with other categories even if one fails
+                continue
+        
+        return embeddings
+    
+    def _parse_extract_results(self, result_json: Dict, original_text: str) -> Dict[str, Any]:
+        """Parse and validate extract results"""
+        # Build structured text for embedding from categorized data
+        structured_parts = []
+        
+        # Personal info
+        personal_info = result_json.get("personal_info", {})
+        if personal_info:
+            if personal_info.get("name"):
+                structured_parts.append(f"Name: {personal_info['name']}")
+            if personal_info.get("email"):
+                structured_parts.append(f"Email: {personal_info['email']}")
+            if personal_info.get("phone"):
+                structured_parts.append(f"Phone: {personal_info['phone']}")
+            if personal_info.get("location"):
+                structured_parts.append(f"Location: {personal_info['location']}")
+        
+        # Summary
+        summary = result_json.get("summary", "")
+        if summary:
+            structured_parts.append(f"Summary: {summary}")
+        
+        # Skills
+        skills = result_json.get("skills", [])
+        if skills:
+            structured_parts.append(f"Skills: {', '.join(skills)}")
+        
+        # Experience
+        experience = result_json.get("experience", [])
+        if experience:
+            structured_parts.append("Experience:")
+            for exp in experience:
+                exp_text = f"  - {exp.get('title', '')} at {exp.get('company', '')}"
+                if exp.get('duration'):
+                    exp_text += f" ({exp['duration']})"
+                if exp.get('description'):
+                    exp_text += f": {exp['description']}"
+                structured_parts.append(exp_text)
+        
+        # Education
+        education = result_json.get("education", [])
+        if education:
+            structured_parts.append("Education:")
+            for edu in education:
+                edu_text = f"  - {edu.get('degree', '')} from {edu.get('institution', '')}"
+                if edu.get('year'):
+                    edu_text += f" ({edu['year']})"
+                structured_parts.append(edu_text)
+        
+        # Languages
+        languages = result_json.get("languages", [])
+        if languages:
+            structured_parts.append(f"Languages: {', '.join(languages)}")
+        
+        # Combine structured text (limit to 2048 chars for embedding)
+        structured_text = "\n".join(structured_parts)
+        if len(structured_text) > 2048:
+            structured_text = structured_text[:2048]
+        
+        # If structured text is too short, use original text as fallback
+        if len(structured_text) < 100:
+            structured_text = original_text[:2048]
+        
+        return {
+            "personal_info": personal_info,
+            "summary": summary,
+            "skills": skills,
+            "experience": experience,
+            "education": education,
+            "languages": languages,
+            "structured_text": structured_text
+        }
+    
     def _build_rerank_prompt(self, query: str, candidates: List[Dict[str, Any]], top_k: int) -> str:
         """Build prompt for reranking"""
         candidates_text = "\n".join([
