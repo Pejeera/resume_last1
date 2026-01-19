@@ -72,14 +72,16 @@ def lambda_handler(event, context):
         }
     
     # Ensure CORS headers are present in all responses
+    # Handle both dict response and async response from Mangum
     if not isinstance(response, dict):
+        # If Mangum returns a coroutine or other type, wrap it
         return response
     
     # Initialize headers if missing
     if "headers" not in response:
         response["headers"] = {}
     
-    # CORS headers to add
+    # CORS headers to add - CRITICAL for HTTP API v2.0
     cors_headers = {
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, PATCH",
@@ -87,10 +89,10 @@ def lambda_handler(event, context):
         "Access-Control-Expose-Headers": "*"
     }
     
-    # Merge CORS headers (don't override if already set by FastAPI)
+    # ALWAYS add CORS headers (override if needed for HTTP API v2.0)
+    # For HTTP API, CORS must come from Lambda response
     for key, value in cors_headers.items():
-        if key.lower() not in {k.lower() for k in response["headers"].keys()}:
-            response["headers"][key] = value
+        response["headers"][key] = value
     
     return response
 

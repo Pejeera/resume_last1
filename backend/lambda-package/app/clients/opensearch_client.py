@@ -362,6 +362,49 @@ class OpenSearchClient:
         except Exception as e:
             logger.error(f"Error getting document {doc_id}: {e}")
             return None
+    
+    def delete_document(self, index_name: str, doc_id: str) -> bool:
+        """
+        Delete a document from OpenSearch
+        
+        Args:
+            index_name: Name of the index
+            doc_id: Document ID to delete
+            
+        Returns:
+            True if deleted successfully, False otherwise
+        """
+        if settings.USE_MOCK:
+            # Remove from mock storage
+            docs = self._mock_data_storage.get(index_name, [])
+            original_count = len(docs)
+            self._mock_data_storage[index_name] = [
+                doc for doc in docs 
+                if doc.get('_id') != doc_id and doc.get('id') != doc_id
+            ]
+            deleted = len(self._mock_data_storage[index_name]) < original_count
+            if deleted:
+                logger.info(f"MOCK: Deleted document {doc_id} from {index_name}")
+            else:
+                logger.warning(f"MOCK: Document {doc_id} not found in {index_name}")
+            return deleted
+        
+        try:
+            response = self.client.delete(index=index_name, id=doc_id)
+            if response.get('result') == 'deleted':
+                logger.info(f"Deleted document {doc_id} from {index_name}")
+                return True
+            else:
+                logger.warning(f"Delete operation returned: {response.get('result')}")
+                return False
+        except Exception as e:
+            error_msg = str(e)
+            # Document not found is not necessarily an error
+            if 'not_found' in error_msg.lower() or '404' in error_msg:
+                logger.info(f"Document {doc_id} not found in {index_name} (may have been already deleted)")
+                return False
+            logger.error(f"Error deleting document {doc_id} from {index_name}: {e}")
+            return False
 
 
 # Singleton instance

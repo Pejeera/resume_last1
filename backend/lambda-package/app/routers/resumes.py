@@ -4,7 +4,7 @@ Handles resume upload and search operations
 """
 from fastapi import APIRouter, UploadFile, File, HTTPException, status, Query
 from fastapi.responses import JSONResponse
-from typing import List, Optional
+from typing import List, Optional, Dict, Any, Dict, Any
 from pydantic import BaseModel, Field
 from datetime import datetime
 import os
@@ -24,6 +24,7 @@ class ResumeUploadResponse(BaseModel):
     s3_url: str
     name: str
     created_at: str
+    categories: Optional[Dict[str, Any]] = None
 
 
 class BulkUploadResponse(BaseModel):
@@ -265,6 +266,76 @@ async def bulk_upload_resumes(files: List[UploadFile] = File(...)):
         )
 
 
+class DeleteResumeResponse(BaseModel):
+    resume_id: str
+    deleted_from_opensearch: bool
+    deleted_from_s3: bool
+    s3_key: Optional[str] = None
+    errors: List[str] = []
+    success: bool
+
+
+@router.delete(
+    "/{resume_id}", 
+    response_model=DeleteResumeResponse,
+    summary="Delete Resume",
+    description="Delete resume from both OpenSearch and S3"
+)
+async def delete_resume(resume_id: str):
+    """
+    Delete resume from both OpenSearch and S3
+    
+    Args:
+        resume_id: Resume ID to delete
+        
+    Returns:
+        Deletion result with status from both OpenSearch and S3
+    """
+    try:
+        logger.info(f"Deleting resume: {resume_id}")
+        
+        # Delete from both OpenSearch and S3
+        result = resume_repository.delete_resume(resume_id)
+        
+        # Determine overall success
+        success = result["deleted_from_opensearch"] and result["deleted_from_s3"]
+        
+        # If at least one deletion succeeded, return 200
+        # If both failed, return 404 or 500 depending on the error
+        if not success:
+            if not result["deleted_from_opensearch"] and not result["deleted_from_s3"]:
+                # Both failed - check if resume exists
+                resume = resume_repository.get_resume(resume_id)
+                if not resume:
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail=f"Resume {resume_id} not found"
+                    )
+                else:
+                    raise HTTPException(
+                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        detail=f"Failed to delete resume {resume_id}: {', '.join(result['errors'])}"
+                    )
+        
+        return {
+            "resume_id": result["resume_id"],
+            "deleted_from_opensearch": result["deleted_from_opensearch"],
+            "deleted_from_s3": result["deleted_from_s3"],
+            "s3_key": result["s3_key"],
+            "errors": result["errors"],
+            "success": success
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Delete resume error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to delete resume: {str(e)}"
+        )
+
+
 class SearchResumesByJobRequest(BaseModel):
     resume_ids: Optional[List[str]] = None
     resume_keys: Optional[List[str]] = None
@@ -343,4 +414,3 @@ async def search_resumes_by_job(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Search failed: {str(e)}"
         )
-

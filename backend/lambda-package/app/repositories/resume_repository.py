@@ -473,6 +473,88 @@ class ResumeRepository:
             import traceback
             logger.error(traceback.format_exc())
             return None
+    
+    def delete_resume(self, resume_id: str) -> Dict[str, Any]:
+        """
+        Delete resume from both OpenSearch and S3
+        
+        Args:
+            resume_id: Resume ID to delete
+            
+        Returns:
+            Dict with deletion results
+        """
+        result = {
+            "resume_id": resume_id,
+            "deleted_from_opensearch": False,
+            "deleted_from_s3": False,
+            "s3_key": None,
+            "errors": []
+        }
+        
+        try:
+            # 1. Get resume from OpenSearch first to get S3 key
+            resume = self.get_resume(resume_id)
+            
+            if not resume:
+                logger.warning(f"Resume {resume_id} not found in OpenSearch")
+                result["errors"].append("Resume not found in OpenSearch")
+                return result
+            
+            s3_key = resume.get('s3_key')
+            result["s3_key"] = s3_key
+            
+            # 2. Delete from OpenSearch
+            try:
+                deleted = self.opensearch.delete_document(
+                    index_name=self.INDEX_NAME,
+                    doc_id=resume_id
+                )
+                result["deleted_from_opensearch"] = deleted
+                if deleted:
+                    logger.info(f"Deleted resume {resume_id} from OpenSearch")
+                else:
+                    logger.warning(f"Failed to delete resume {resume_id} from OpenSearch")
+                    result["errors"].append("Failed to delete from OpenSearch")
+            except Exception as e:
+                logger.error(f"Error deleting resume {resume_id} from OpenSearch: {e}")
+                result["errors"].append(f"OpenSearch error: {str(e)}")
+            
+            # 3. Delete from S3 (if s3_key is available)
+            if s3_key:
+                try:
+                    deleted = self.s3.delete_file(s3_key)
+                    result["deleted_from_s3"] = deleted
+                    if deleted:
+                        logger.info(f"Deleted resume {resume_id} from S3: {s3_key}")
+                    else:
+                        logger.warning(f"Failed to delete resume {resume_id} from S3: {s3_key}")
+                        result["errors"].append("Failed to delete from S3")
+                except Exception as e:
+                    logger.error(f"Error deleting resume {resume_id} from S3: {e}")
+                    result["errors"].append(f"S3 error: {str(e)}")
+            else:
+                logger.warning(f"No S3 key found for resume {resume_id}, skipping S3 deletion")
+                result["errors"].append("No S3 key found")
+            
+            # Check if both deletions were successful
+            if result["deleted_from_opensearch"] and result["deleted_from_s3"]:
+                logger.info(f"Successfully deleted resume {resume_id} from both OpenSearch and S3")
+            elif result["deleted_from_opensearch"]:
+                logger.warning(f"Deleted resume {resume_id} from OpenSearch but not from S3")
+            elif result["deleted_from_s3"]:
+                logger.warning(f"Deleted resume {resume_id} from S3 but not from OpenSearch")
+            else:
+                logger.error(f"Failed to delete resume {resume_id} from both OpenSearch and S3")
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error deleting resume {resume_id}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            result["errors"].append(f"Unexpected error: {str(e)}")
+            return result
 
 
 resume_repository = ResumeRepository()
