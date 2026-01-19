@@ -144,49 +144,40 @@ class MatchingService:
             # 2. Vector search in resumes index
             logger.info(f"Searching resumes index (top_k={top_k_initial})")
             
-            # If resume_ids provided, filter to only those resumes
+            # Log available resumes count
+            available_resumes_count = None
+            if settings.USE_MOCK:
+                from app.clients.opensearch_client import opensearch_client
+                available_resumes = opensearch_client._mock_data_storage.get(self.RESUMES_INDEX, [])
+                available_resumes_count = len(available_resumes)
+                logger.info(f"Available resumes in index: {available_resumes_count}")
+            
+            # If resume_ids provided, use vector search with filter
             if resume_ids:
-                logger.info(f"Filtering to {len(resume_ids)} specified resumes")
-                from app.repositories.resume_repository import resume_repository
-                import numpy as np
+                logger.info(f"Filtering to {len(resume_ids)} specified resumes using vector search")
                 
-                # Get resumes by IDs and calculate similarity
-                candidates = []
-                for resume_id in resume_ids:
-                    resume = resume_repository.get_resume(resume_id)
-                    if not resume:
-                        # Try to get from S3
-                        resume = resume_repository.get_resume_from_s3(resume_id)
-                    
-                    if resume:
-                        # Calculate similarity score
-                        resume_embedding = resume.get("embeddings")
-                        if resume_embedding:
-                            try:
-                                # Calculate cosine similarity
-                                dot_product = np.dot(job_embedding, resume_embedding)
-                                norm_a = np.linalg.norm(job_embedding)
-                                norm_b = np.linalg.norm(resume_embedding)
-                                similarity = dot_product / (norm_a * norm_b) if (norm_a * norm_b) > 0 else 0.0
-                                
-                                resume["_score"] = float(similarity)
-                                resume["_id"] = resume.get("id", resume_id)
-                                candidates.append(resume)
-                            except Exception as e:
-                                logger.error(f"Error calculating similarity for resume {resume_id}: {e}")
+                # Use vector search with filter to leverage OpenSearch KNN search
+                # This is much faster and more accurate than manual calculation
+                filters = {
+                    "terms": {
+                        "id": resume_ids  # Filter by resume IDs
+                    }
+                }
                 
-                # Sort by score
-                candidates.sort(key=lambda x: x.get("_score", 0), reverse=True)
-                logger.info(f"Found {len(candidates)} candidates from specified resumes")
+                candidates = self.opensearch.vector_search(
+                    index_name=self.RESUMES_INDEX,
+                    query_vector=job_embedding,
+                    top_k=top_k_initial,
+                    filters=filters
+                )
+                
+                if not candidates:
+                    logger.warning(f"No resumes found in vector search with filters. Available resumes in index: {available_resumes_count if available_resumes_count is not None else 'N/A'}")
+                    return []
+                
+                logger.info(f"Found {len(candidates)} candidates from vector search with filters")
             else:
-                # Log available resumes count
-                available_resumes_count = None
-                if settings.USE_MOCK:
-                    from app.clients.opensearch_client import opensearch_client
-                    available_resumes = opensearch_client._mock_data_storage.get(self.RESUMES_INDEX, [])
-                    available_resumes_count = len(available_resumes)
-                    logger.info(f"Available resumes in index: {available_resumes_count}")
-                
+                # No resume_ids - use vector search on all resumes
                 candidates = self.opensearch.vector_search(
                     index_name=self.RESUMES_INDEX,
                     query_vector=job_embedding,
@@ -208,7 +199,7 @@ class MatchingService:
                     "text_excerpt": candidate.get("text_excerpt", ""),
                     "metadata": candidate.get("metadata", {}),
                     "vector_score": candidate.get("_score", 0.0),
-                    "resume_id": candidate.get("_id", "")
+                    "resume_id": candidate.get("_id", "") or candidate.get("id", "")  # Support both _id and id fields
                 })
             
             # 4. Rerank with Bedrock LLM
