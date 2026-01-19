@@ -132,14 +132,38 @@ class S3Client:
             return True
         
         try:
+            # First check if file exists
+            try:
+                self.client.head_object(
+                    Bucket=settings.S3_BUCKET_NAME,
+                    Key=s3_key
+                )
+            except ClientError as head_error:
+                error_code = head_error.response.get('Error', {}).get('Code', '')
+                if error_code == '404' or error_code == 'NoSuchKey':
+                    logger.warning(f"File {s3_key} does not exist in S3 (may have been already deleted)")
+                    return True  # Consider it successful if file doesn't exist
+                else:
+                    logger.error(f"S3 head_object error for {s3_key}: {error_code} - {head_error}")
+                    raise head_error
+            
+            # File exists, proceed with deletion
             self.client.delete_object(
                 Bucket=settings.S3_BUCKET_NAME,
                 Key=s3_key
             )
-            logger.info(f"Deleted file {s3_key}")
+            logger.info(f"Deleted file {s3_key} from S3 bucket {settings.S3_BUCKET_NAME}")
             return True
         except ClientError as e:
-            logger.error(f"S3 delete error: {e}")
+            error_code = e.response.get('Error', {}).get('Code', '')
+            error_message = e.response.get('Error', {}).get('Message', str(e))
+            logger.error(f"S3 delete error for {s3_key}: Code={error_code}, Message={error_message}")
+            logger.error(f"Full error: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"Unexpected error deleting file {s3_key} from S3: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return False
     
     def save_jobs_data(self, jobs_data: List[Dict[str, Any]]) -> bool:
@@ -309,6 +333,11 @@ class S3ClientWrapper:
     """Wrapper to maintain backward compatibility"""
     def __getattr__(self, name):
         return getattr(get_s3_client(), name)
+    
+    @property
+    def client(self):
+        """Expose client attribute directly"""
+        return get_s3_client().client
 
 s3_client = S3ClientWrapper()
 

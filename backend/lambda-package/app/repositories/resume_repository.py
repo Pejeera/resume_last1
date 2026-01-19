@@ -523,15 +523,23 @@ class ResumeRepository:
             # 3. Delete from S3 (if s3_key is available)
             if s3_key:
                 try:
-                    deleted = self.s3.delete_file(s3_key)
-                    result["deleted_from_s3"] = deleted
-                    if deleted:
-                        logger.info(f"Deleted resume {resume_id} from S3: {s3_key}")
+                    # Check if S3 client is available
+                    if not hasattr(self.s3, 'client') or not self.s3.client:
+                        logger.error(f"S3 client not available for resume {resume_id}")
+                        result["errors"].append("S3 client not initialized")
                     else:
-                        logger.warning(f"Failed to delete resume {resume_id} from S3: {s3_key}")
-                        result["errors"].append("Failed to delete from S3")
+                        deleted = self.s3.delete_file(s3_key)
+                        result["deleted_from_s3"] = deleted
+                        if deleted:
+                            logger.info(f"Deleted resume {resume_id} from S3: {s3_key}")
+                        else:
+                            logger.warning(f"Failed to delete resume {resume_id} from S3: {s3_key}")
+                            result["errors"].append(f"Failed to delete from S3: {s3_key}")
                 except Exception as e:
-                    logger.error(f"Error deleting resume {resume_id} from S3: {e}")
+                    error_msg = f"Error deleting resume {resume_id} from S3: {e}"
+                    logger.error(error_msg)
+                    import traceback
+                    logger.error(traceback.format_exc())
                     result["errors"].append(f"S3 error: {str(e)}")
             else:
                 logger.warning(f"No S3 key found for resume {resume_id}, skipping S3 deletion")
