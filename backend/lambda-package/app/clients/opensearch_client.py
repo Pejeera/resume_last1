@@ -230,30 +230,41 @@ class OpenSearchClient:
         
         try:
             # Try KNN search first
-            query = {
-                "size": top_k,
-                "query": {
-                    "knn": {
-                        "embeddings": {
-                            "vector": query_vector,
-                            "k": top_k
-                        }
-                    }
-                },
-                "_source": True
-            }
-            
+            # Build query based on whether filters are provided
             if filters:
-                query["query"]["bool"] = {
-                    "must": [
-                        {"knn": {
+                # When filters are provided, use bool query with knn in must clause
+                query = {
+                    "size": top_k,
+                    "query": {
+                        "bool": {
+                            "must": [
+                                {
+                                    "knn": {
+                                        "embeddings": {
+                                            "vector": query_vector,
+                                            "k": top_k
+                                        }
+                                    }
+                                }
+                            ],
+                            "filter": filters
+                        }
+                    },
+                    "_source": True
+                }
+            else:
+                # No filters - use simple knn query
+                query = {
+                    "size": top_k,
+                    "query": {
+                        "knn": {
                             "embeddings": {
                                 "vector": query_vector,
                                 "k": top_k
                             }
-                        }}
-                    ],
-                    "filter": filters
+                        }
+                    },
+                    "_source": True
                 }
             
             try:

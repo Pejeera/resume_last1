@@ -1043,7 +1043,7 @@
                 if (token) {
                     uploadHeaders['Authorization'] = `Bearer ${token}`;
                 }
-                const uploadResponse = await fetch(`${API_BASE_URL}/resumes/upload_to_s3`, {
+                const uploadResponse = await fetch(`${API_BASE_URL}/resumes/upload`, {
                     headers: uploadHeaders,
                     method: 'POST',
                     body: formData

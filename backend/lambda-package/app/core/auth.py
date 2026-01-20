@@ -121,3 +121,53 @@ def get_user_sub(request: Request) -> Optional[str]:
         return user.get("sub")
     return None
 
+
+def require_auth(request: Request) -> Dict[str, Any]:
+    """
+    Require authentication - raises 401 if not authenticated.
+    
+    This function checks:
+    1. API Gateway JWT claims (if running in Lambda)
+    2. Authorization header with Bearer token (for local development)
+    
+    Returns:
+        Dict with user claims
+        
+    Raises:
+        HTTPException 401 if not authenticated
+    """
+    # First, try to get user from API Gateway claims
+    user = get_user_from_api_gateway(request)
+    
+    if user:
+        logger.debug(f"User authenticated via API Gateway: {user.get('email', user.get('sub', 'unknown'))}")
+        return user
+    
+    # If no API Gateway claims, check Authorization header (for local development)
+    auth_header = request.headers.get("Authorization")
+    
+    if auth_header:
+        # Check if it's a Bearer token
+        if auth_header.startswith("Bearer "):
+            token = auth_header.replace("Bearer ", "").strip()
+            
+            if token:
+                # For local development, if token exists, we assume it's valid
+                # (In production, API Gateway would have verified it)
+                # You can add JWT verification here if needed
+                logger.debug("Token found in Authorization header (local development mode)")
+                # Return a basic user dict for local dev
+                # In production, this should not be reached as API Gateway handles auth
+                return {
+                    "sub": "local-dev-user",
+                    "email": "local-dev@example.com",
+                    "authenticated": True
+                }
+    
+    # No authentication found - raise 401
+    logger.warning("Authentication required but not provided")
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Authentication required. Please provide a valid JWT token.",
+        headers={"WWW-Authenticate": "Bearer"},
+    )

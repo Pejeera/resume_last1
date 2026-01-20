@@ -200,26 +200,51 @@ class JobRepository:
             # Load jobs from S3
             jobs_data = s3_client.load_jobs_data()
             if not jobs_data:
+                logger.warning(f"get_job_from_s3: No jobs data loaded from S3 for job_id={job_id}")
                 return None
             
-            # Find job by ID
-            for job in jobs_data:
+            logger.info(f"get_job_from_s3: Searching for job_id={job_id} in {len(jobs_data)} jobs")
+            
+            # Find job by ID - try multiple ID field formats
+            for idx, job in enumerate(jobs_data):
                 job_id_in_data = job.get("_id") or job.get("id") or job.get("job_id") or ""
-                if job_id_in_data == job_id:
-                    # Return job in OpenSearch format
+                
+                # Log for debugging (only for first few jobs to avoid spam)
+                if idx < 3:
+                    logger.debug(f"get_job_from_s3: Checking job with id={job_id_in_data}, title={job.get('title', 'N/A')}")
+                
+                # Compare job IDs (strip whitespace and compare as strings)
+                if str(job_id_in_data).strip() == str(job_id).strip():
+                    logger.info(f"get_job_from_s3: Found job {job_id} in S3")
+                    # Return job with all fields (similar to what list_jobs returns)
                     return {
                         "id": job_id,
+                        "job_id": job_id,
+                        "_id": job_id,
                         "title": job.get("title", "N/A"),
                         "description": job.get("description", job.get("text_excerpt", "")),
                         "text_excerpt": job.get("text_excerpt", job.get("description", ""))[:500],
                         "metadata": job.get("metadata", {}),
-                        "created_at": job.get("created_at", "")
+                        "created_at": job.get("created_at", ""),
+                        # Include flattened metadata fields for compatibility
+                        "location": job.get("location") or (job.get("metadata", {}).get("location") if isinstance(job.get("metadata"), dict) else None),
+                        "department": job.get("department") or (job.get("metadata", {}).get("department") if isinstance(job.get("metadata"), dict) else None),
+                        "employment_type": job.get("employment_type") or (job.get("metadata", {}).get("employment_type") if isinstance(job.get("metadata"), dict) else None),
+                        "experience_years": job.get("experience_years") or (job.get("metadata", {}).get("experience_years") if isinstance(job.get("metadata"), dict) else None),
+                        "skills": job.get("skills") or (job.get("metadata", {}).get("skills", []) if isinstance(job.get("metadata"), dict) else []),
+                        "responsibilities": job.get("responsibilities") or (job.get("metadata", {}).get("responsibilities", []) if isinstance(job.get("metadata"), dict) else []),
+                        "requirements": job.get("requirements") or (job.get("metadata", {}).get("requirements", []) if isinstance(job.get("metadata"), dict) else []),
+                        "scoring_weights": job.get("scoring_weights") or (job.get("metadata", {}).get("scoring_weights") if isinstance(job.get("metadata"), dict) else None),
+                        "embeddings": job.get("embeddings")  # Include embeddings if available
                     }
             
+            # Log all job IDs found for debugging
+            found_ids = [job.get("_id") or job.get("id") or job.get("job_id") or "NO_ID" for job in jobs_data]
+            logger.warning(f"get_job_from_s3: Job {job_id} not found. Available job IDs: {found_ids[:10]}")  # Log first 10 IDs
             return None
             
         except Exception as e:
-            logger.error(f"Error getting job from S3: {e}")
+            logger.error(f"Error getting job from S3: {e}", exc_info=True)
             return None
 
 

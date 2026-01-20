@@ -109,33 +109,6 @@ class ResumeRepository:
             logger.error(f"Error creating resume: {e}")
             raise
     
-    def bulk_create_resumes(
-        self,
-        files: List[tuple]  # List of (file_content, file_name) tuples
-    ) -> List[Dict[str, Any]]:
-        """
-        Bulk create resumes
-        
-        Args:
-            files: List of (file_content, file_name) tuples
-            
-        Returns:
-            List of created resume documents
-        """
-        results = []
-        for file_content, file_name in files:
-            try:
-                result = self.create_resume(file_content, file_name)
-                results.append(result)
-            except Exception as e:
-                logger.error(f"Error creating resume {file_name}: {e}")
-                results.append({
-                    "error": str(e),
-                    "file_name": file_name
-                })
-        
-        return results
-    
     def get_resume(self, resume_id: str) -> Optional[Dict[str, Any]]:
         """Get resume by ID"""
         return self.opensearch.get_document(self.INDEX_NAME, resume_id)

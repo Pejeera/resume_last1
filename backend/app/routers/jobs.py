@@ -5,7 +5,7 @@ Handles job creation and search operations
 import json
 import os
 from datetime import datetime
-from fastapi import APIRouter, HTTPException, status, UploadFile, File, UploadFile, File
+from fastapi import APIRouter, HTTPException, status, UploadFile, File, UploadFile, File, Depends
 from pydantic import BaseModel, Field, ConfigDict
 from typing import Optional, List, Dict, Any
 
@@ -13,6 +13,7 @@ from app.repositories.job_repository import job_repository
 from app.services.matching_service import matching_service
 from app.repositories.resume_repository import resume_repository
 from app.core.logging import get_logger
+from app.core.auth import require_auth
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -110,7 +111,7 @@ class SearchByResumeRequest(BaseModel):
 
 
 @router.get("/list")
-async def list_jobs():
+async def list_jobs(user: dict = Depends(require_auth)):
     try:
         from app.clients.s3_client import s3_client
         from app.core.config import settings
@@ -187,7 +188,7 @@ async def list_jobs():
 
 
 @router.post("/create", response_model=JobCreateResponse)
-async def create_job(request: JobCreateRequest):
+async def create_job(request: JobCreateRequest, user: dict = Depends(require_auth)):
     try:
         result = job_repository.create_job(
             title=request.title,
@@ -208,7 +209,7 @@ async def create_job(request: JobCreateRequest):
 
 
 @router.post("/upload", response_model=JobUploadResponse)
-async def upload_job_file(file: UploadFile = File(...)):
+async def upload_job_file(file: UploadFile = File(...), user: dict = Depends(require_auth)):
     """
     Upload a job JSON file
     Accepts a JSON file containing job data and stores it in both S3 and OpenSearch
@@ -244,11 +245,34 @@ async def upload_job_file(file: UploadFile = File(...)):
                 detail="JSON file must contain 'title' field"
             )
         
-        if "description" not in job_data:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="JSON file must contain 'description' field"
-            )
+        # Handle description - use text_excerpt or other fields if description is missing
+        description = job_data.get("description")
+        if not description:
+            # Try to get from text_excerpt or other fields
+            description = job_data.get("text_excerpt") or job_data.get("text") or job_data.get("content")
+            
+            # If still no description, try to build from available fields
+            if not description:
+                desc_parts = []
+                if job_data.get("title"):
+                    desc_parts.append(f"Position: {job_data['title']}")
+                if job_data.get("requirements"):
+                    if isinstance(job_data["requirements"], list):
+                        desc_parts.append(f"Requirements: {' '.join(job_data['requirements'])}")
+                    else:
+                        desc_parts.append(f"Requirements: {job_data['requirements']}")
+                if job_data.get("responsibilities"):
+                    if isinstance(job_data["responsibilities"], list):
+                        desc_parts.append(f"Responsibilities: {' '.join(job_data['responsibilities'])}")
+                    else:
+                        desc_parts.append(f"Responsibilities: {job_data['responsibilities']}")
+                if job_data.get("skills"):
+                    if isinstance(job_data["skills"], list):
+                        desc_parts.append(f"Skills: {', '.join(job_data['skills'])}")
+                    else:
+                        desc_parts.append(f"Skills: {job_data['skills']}")
+                
+                description = "\n".join(desc_parts) if desc_parts else job_data.get("title", "No description available")
         
         # Extract metadata if present
         metadata = job_data.get("metadata")
@@ -263,7 +287,7 @@ async def upload_job_file(file: UploadFile = File(...)):
         # Create job using repository (will save to both S3 and OpenSearch)
         result = job_repository.create_job(
             title=job_data["title"],
-            description=job_data["description"],
+            description=description,
             metadata=metadata
         )
         
@@ -285,115 +309,8 @@ async def upload_job_file(file: UploadFile = File(...)):
         )
 
 
-@router.post("/sync_from_s3")
-async def sync_jobs_from_s3():
-    try:
-        from app.clients.s3_client import s3_client
-        from app.clients.opensearch_client import opensearch_client
-        from app.core.config import settings
-        
-        if settings.USE_MOCK:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Sync from S3 is only available in production mode (USE_MOCK=false)"
-            )
-        
-        # Load jobs from S3
-        logger.info("Loading jobs from S3...")
-        jobs_data = s3_client.load_jobs_data()
-        
-        if not jobs_data:
-            return {
-                "message": "No jobs found in S3",
-                "synced": 0,
-                "total": 0
-            }
-        
-        # Ensure index exists
-        index_mapping = {
-            "mappings": {
-                "properties": {
-                    "id": {"type": "keyword"},
-                    "title": {"type": "text"},
-                    "description": {"type": "text"},
-                    "text_excerpt": {"type": "text"},
-                    "embeddings": {
-                        "type": "knn_vector",
-                        "dimension": 1024
-                    },
-                    "metadata": {"type": "object"},
-                    "created_at": {"type": "date"}
-                }
-            }
-        }
-        opensearch_client.create_index_if_not_exists("jobs_index", index_mapping)
-        
-        # Index each job to OpenSearch
-        synced_count = 0
-        skipped_count = 0
-        from app.clients.bedrock_client import bedrock_client
-        
-        for job_data in jobs_data:
-            try:
-                # Extract job ID and document
-                job_id = job_data.get("_id") or job_data.get("job_id") or job_data.get("id")
-                
-                if not job_id:
-                    skipped_count += 1
-                    continue
-                
-                # Prepare document for indexing
-                # Remove _id if present (it's used as doc_id parameter)
-                document = {k: v for k, v in job_data.items() if k != "_id"}
-                
-                # Ensure required fields exist
-                if "id" not in document:
-                    document["id"] = job_id
-                
-                # Generate embedding if not already present
-                if "embeddings" not in document or not document.get("embeddings"):
-                    logger.info(f"Generating embedding for job {job_id}")
-                    full_text = f"{document.get('title', '')}\n{document.get('description', '')}"
-                    try:
-                        embedding = bedrock_client.generate_embedding(full_text)
-                        document["embeddings"] = embedding
-                        logger.info(f"Generated embedding for job {job_id} (dimension: {len(embedding)})")
-                    except Exception as e:
-                        logger.error(f"Failed to generate embedding for job {job_id}: {e}")
-                        # Continue without embedding (will be skipped in vector search)
-                
-                # Index to OpenSearch
-                opensearch_client.index_document(
-                    index_name="jobs_index",
-                    doc_id=str(job_id),
-                    document=document
-                )
-                synced_count += 1
-                
-            except Exception as e:
-                logger.error(f"Failed to sync job {job_data.get('_id', job_data.get('job_id', 'unknown'))}: {e}")
-                skipped_count += 1
-        
-        logger.info(f"Synced {synced_count} jobs from S3 to OpenSearch (skipped: {skipped_count})")
-        return {
-            "message": f"Successfully synced {synced_count} jobs from S3 to OpenSearch",
-            "synced": synced_count,
-            "skipped": skipped_count,
-            "total": len(jobs_data)
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Sync from S3 error: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to sync jobs from S3: {str(e)}"
-        )
-
-
 @router.post("/search_by_resume")
-async def search_jobs_by_resume(request: SearchByResumeRequest):
+async def search_jobs_by_resume(request: SearchByResumeRequest, user: dict = Depends(require_auth)):
     try:
         # Determine which identifier to use (prefer resume_key if provided)
         resume_identifier = request.resume_key or request.resume_id
@@ -476,7 +393,7 @@ class JobUpdateRequest(BaseModel):
 
 
 @router.get("/{job_id}")
-async def get_job(job_id: str):
+async def get_job(job_id: str, user: dict = Depends(require_auth)):
     """
     Get job details by ID
     Tries OpenSearch first, then falls back to S3
@@ -552,7 +469,7 @@ async def get_job(job_id: str):
 
 
 @router.put("/{job_id}")
-async def update_job(job_id: str, request: JobUpdateRequest):
+async def update_job(job_id: str, request: JobUpdateRequest, user: dict = Depends(require_auth)):
     try:
         from app.clients.s3_client import s3_client
         from app.clients.opensearch_client import opensearch_client
@@ -680,7 +597,7 @@ async def update_job(job_id: str, request: JobUpdateRequest):
 
 
 @router.delete("/{job_id}", summary="Delete job by ID", tags=["Jobs"])
-async def delete_job(job_id: str):
+async def delete_job(job_id: str, user: dict = Depends(require_auth)):
     """
     Delete a job by ID
     Deletes from both S3 and OpenSearch

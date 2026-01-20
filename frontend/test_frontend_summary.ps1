@@ -48,7 +48,7 @@ Write-Host "  - GET  /api/jobs/list" -ForegroundColor White
 Write-Host "  - GET  /api/resumes/list" -ForegroundColor White
 Write-Host "  - POST /api/jobs/search_by_resume" -ForegroundColor White
 Write-Host "  - GET  /api/resumes/search_by_job" -ForegroundColor White
-Write-Host "  - POST /api/resumes/upload_to_s3" -ForegroundColor White
+Write-Host "  - POST /api/resumes/upload" -ForegroundColor White
 Write-Host "  - POST /api/auth/login" -ForegroundColor White
 Write-Host ""
 

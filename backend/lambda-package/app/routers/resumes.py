@@ -2,7 +2,7 @@
 Resume Router
 Handles resume upload and search operations
 """
-from fastapi import APIRouter, UploadFile, File, HTTPException, status, Query
+from fastapi import APIRouter, UploadFile, File, HTTPException, status, Query, Depends
 from fastapi.responses import JSONResponse
 from typing import List, Optional, Dict, Any, Dict, Any
 from pydantic import BaseModel, Field
@@ -14,6 +14,7 @@ from app.repositories.resume_repository import resume_repository
 from app.services.matching_service import matching_service
 from app.core.logging import get_logger
 from app.core.exceptions import FileProcessingError
+from app.core.auth import require_auth
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -27,55 +28,8 @@ class ResumeUploadResponse(BaseModel):
     categories: Optional[Dict[str, Any]] = None
 
 
-class BulkUploadResponse(BaseModel):
-    results: List[dict]
-    total: int
-    success: int
-    failed: int
-
-
-@router.post("/upload_to_s3", response_model=ResumeUploadResponse)
-async def upload_resume_to_s3(file: UploadFile = File(...)):
-    try:
-        if not file.filename:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="No file provided"
-            )
-        
-        # Read file content
-        file_content = await file.read()
-        
-        # Upload to S3 only (no processing)
-        from app.clients.s3_client import s3_client
-        from datetime import datetime
-        
-        upload_result = s3_client.upload_file(
-            file_content=file_content,
-            file_name=file.filename,
-            content_type=file.content_type or "application/pdf"
-        )
-        
-        resume_id = upload_result["file_id"]
-        
-        logger.info(f"Uploaded resume to S3: {resume_id}")
-        return {
-            "resume_id": resume_id,
-            "s3_url": upload_result["s3_url"],
-            "name": file.filename,
-            "created_at": datetime.utcnow().isoformat()
-        }
-        
-    except Exception as e:
-        logger.error(f"Upload to S3 error: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to upload resume to S3: {str(e)}"
-        )
-
-
 @router.post("/upload", response_model=ResumeUploadResponse)
-async def upload_resume(file: UploadFile = File(...)):
+async def upload_resume(file: UploadFile = File(...), user: dict = Depends(require_auth)):
     try:
         if not file.filename:
             raise HTTPException(
@@ -110,7 +64,7 @@ async def upload_resume(file: UploadFile = File(...)):
 
 
 @router.get("/list")
-async def list_resumes():
+async def list_resumes(user: dict = Depends(require_auth)):
     try:
         from app.clients.s3_client import s3_client
         from app.core.config import settings
@@ -227,45 +181,6 @@ async def list_resumes():
         )
 
 
-@router.post("/bulk_upload", response_model=BulkUploadResponse)
-async def bulk_upload_resumes(files: List[UploadFile] = File(...)):
-    try:
-        if not files:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="No files provided"
-            )
-        
-        # Read all files
-        file_data = []
-        for file in files:
-            if file.filename:
-                content = await file.read()
-                file_data.append((content, file.filename))
-        
-        # Bulk create
-        results = resume_repository.bulk_create_resumes(file_data)
-        
-        success = sum(1 for r in results if "resume_id" in r)
-        failed = len(results) - success
-        
-        logger.info(f"Bulk upload: {success} success, {failed} failed")
-        
-        return {
-            "results": results,
-            "total": len(results),
-            "success": success,
-            "failed": failed
-        }
-        
-    except Exception as e:
-        logger.error(f"Bulk upload error: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to bulk upload resumes: {str(e)}"
-        )
-
-
 class DeleteResumeResponse(BaseModel):
     resume_id: str
     deleted_from_opensearch: bool
@@ -281,7 +196,7 @@ class DeleteResumeResponse(BaseModel):
     summary="Delete Resume",
     description="Delete resume from both OpenSearch and S3"
 )
-async def delete_resume(resume_id: str):
+async def delete_resume(resume_id: str, user: dict = Depends(require_auth)):
     """
     Delete resume from both OpenSearch and S3
     
@@ -343,7 +258,8 @@ class SearchResumesByJobRequest(BaseModel):
 @router.post("/search_by_job")
 async def search_resumes_by_job(
     job_id: str = Query(...),
-    request: Optional[SearchResumesByJobRequest] = None
+    request: Optional[SearchResumesByJobRequest] = None,
+    user: dict = Depends(require_auth)
 ):
     try:
         # Get job description from repository
