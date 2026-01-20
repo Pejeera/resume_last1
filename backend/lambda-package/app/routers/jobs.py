@@ -6,8 +6,8 @@ import json
 import os
 from datetime import datetime
 from fastapi import APIRouter, HTTPException, status
-from pydantic import BaseModel, Field
-from typing import Optional
+from pydantic import BaseModel, Field, ConfigDict
+from typing import Optional, List, Dict, Any
 
 from app.repositories.job_repository import job_repository
 from app.services.matching_service import matching_service
@@ -18,10 +18,77 @@ logger = get_logger(__name__)
 router = APIRouter()
 
 
+class JobMetadata(BaseModel):
+    """Structured metadata for a job posting (used in Swagger UI)."""
+    location: Optional[str] = Field(
+        default=None,
+        description="สถานที่ทำงาน เช่น Bangkok หรือ Remote"
+    )
+    department: Optional[str] = Field(
+        default=None,
+        description="แผนกหรือทีม เช่น Engineering, HR"
+    )
+    employment_type: Optional[str] = Field(
+        default=None,
+        description="ประเภทงาน เช่น full-time, part-time, contract"
+    )
+    experience_years: Optional[int] = Field(
+        default=None,
+        description="จำนวนปีประสบการณ์ที่ต้องการ เช่น 3"
+    )
+    skills: List[str] = Field(
+        default_factory=list,
+        description="สกิลที่ต้องการ เช่น ['Python', 'AWS', 'SQL']"
+    )
+    responsibilities: List[str] = Field(
+        default_factory=list,
+        description="หน้าที่ความรับผิดชอบหลักของตำแหน่งนี้"
+    )
+    requirements: List[str] = Field(
+        default_factory=list,
+        description="คุณสมบัติ / สิ่งที่ผู้สมัครควรมี"
+    )
+    scoring_weights: Optional[Dict[str, float]] = Field(
+        default=None,
+        description="น้ำหนักคะแนนสำหรับแต่ละหัวข้อ เช่น { 'skills': 0.5, 'experience_years': 0.3 }"
+    )
+
+
 class JobCreateRequest(BaseModel):
-    title: str
-    description: str
-    metadata: Optional[dict] = None
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "title": "Backend Engineer",
+                "description": "พัฒนาและดูแลระบบ Backend ด้วย Python/FastAPI",
+                "metadata": {
+                    "location": "Bangkok",
+                    "department": "Engineering",
+                    "employment_type": "full-time",
+                    "experience_years": 3,
+                    "skills": ["Python", "FastAPI", "SQL", "AWS"],
+                    "responsibilities": [
+                        "ออกแบบและพัฒนา REST API",
+                        "ดูแล performance และ reliability ของระบบ"
+                    ],
+                    "requirements": [
+                        "มีประสบการณ์ด้าน Backend 3 ปีขึ้นไป",
+                        "เข้าใจ RESTful API และฐานข้อมูลเชิงสัมพันธ์"
+                    ],
+                    "scoring_weights": {
+                        "skills": 0.5,
+                        "experience_years": 0.3,
+                        "requirements": 0.2
+                    }
+                }
+            }
+        }
+    )
+    title: str = Field(..., description="ชื่อตำแหน่งงาน")
+    description: str = Field(..., description="รายละเอียดงาน (ข้อความยาวได้)")
+    metadata: Optional[JobMetadata] = Field(
+        default=None,
+        description="รายละเอียดเพิ่มเติมของตำแหน่งงาน แยกเป็นหัวข้อย่อย"
+    )
 
 
 class JobCreateResponse(BaseModel):
@@ -118,7 +185,8 @@ async def create_job(request: JobCreateRequest):
         result = job_repository.create_job(
             title=request.title,
             description=request.description,
-            metadata=request.metadata
+            # Convert Pydantic model to dict for storage/search
+            metadata=request.metadata.dict() if request.metadata else None
         )
         
         logger.info(f"Created job: {result['job_id']}")
@@ -321,6 +389,83 @@ async def search_jobs_by_resume(request: SearchByResumeRequest):
 class JobUpdateRequest(BaseModel):
     job: dict
 
+
+@router.get("/{job_id}")
+async def get_job(job_id: str):
+    """
+    Get job details by ID
+    Tries OpenSearch first, then falls back to S3
+    Returns job in the same format as list_jobs for frontend compatibility
+    """
+    try:
+        from app.clients.s3_client import s3_client
+        from app.core.config import settings
+        
+        # Try OpenSearch first
+        job = job_repository.get_job(job_id)
+        
+        # If not found in OpenSearch, try S3
+        if not job:
+            logger.info(f"Job {job_id} not found in OpenSearch, trying S3...")
+            job = job_repository.get_job_from_s3(job_id)
+        
+        # If still not found, try loading directly from S3
+        if not job:
+            logger.info(f"Job {job_id} not found in repository, trying direct S3 load...")
+            try:
+                jobs_data = s3_client.load_jobs_data()
+                if jobs_data:
+                    for job_item in jobs_data:
+                        job_id_in_data = job_item.get("_id") or job_item.get("id") or job_item.get("job_id") or ""
+                        if job_id_in_data == job_id:
+                            job = job_item
+                            break
+            except Exception as s3_error:
+                logger.warning(f"Failed to load job from S3: {s3_error}")
+        
+        if not job:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Job {job_id} not found"
+            )
+        
+        # Extract job ID - support multiple formats
+        job_id_final = job.get("_id") or job.get("id") or job.get("job_id") or job_id
+        
+        # Format job object to match list_jobs format for frontend compatibility
+        job_obj = {
+            "id": job_id_final,  # Frontend uses this
+            "job_id": job_id_final,  # Backward compatibility
+            "title": job.get("title", "N/A"),
+            "description": job.get("description", job.get("text_excerpt", "")),
+            "created_at": job.get("created_at", ""),
+            # Include full job data for frontend job viewer
+            "location": job.get("location") or (job.get("metadata", {}).get("location") if isinstance(job.get("metadata"), dict) else None),
+            "department": job.get("department") or (job.get("metadata", {}).get("department") if isinstance(job.get("metadata"), dict) else None),
+            "employment_type": job.get("employment_type") or (job.get("metadata", {}).get("employment_type") if isinstance(job.get("metadata"), dict) else None),
+            "experience_years": job.get("experience_years") or (job.get("metadata", {}).get("experience_years") if isinstance(job.get("metadata"), dict) else None),
+            "skills": job.get("skills") or (job.get("metadata", {}).get("skills", []) if isinstance(job.get("metadata"), dict) else []),
+            "responsibilities": job.get("responsibilities") or (job.get("metadata", {}).get("responsibilities", []) if isinstance(job.get("metadata"), dict) else []),
+            "requirements": job.get("requirements") or (job.get("metadata", {}).get("requirements", []) if isinstance(job.get("metadata"), dict) else []),
+            "scoring_weights": job.get("scoring_weights") or (job.get("metadata", {}).get("scoring_weights") if isinstance(job.get("metadata"), dict) else None),
+            "metadata": job.get("metadata", {}),
+            "text_excerpt": job.get("text_excerpt", job.get("description", "")[:500]),
+            "embeddings": job.get("embeddings")  # Include embeddings if available
+        }
+        
+        logger.info(f"Retrieved job {job_id_final}")
+        return job_obj
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Get job error: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get job: {str(e)}"
+        )
+
+
 @router.put("/{job_id}")
 async def update_job(job_id: str, request: JobUpdateRequest):
     try:
@@ -344,15 +489,31 @@ async def update_job(job_id: str, request: JobUpdateRequest):
         job_data["job_id"] = final_job_id
         job_data["_id"] = final_job_id
         
+        # Generate filename from title (using helper from job_repository)
+        job_title = job_data.get("title", "job")
+        filename = job_repository._sanitize_filename(job_title, final_job_id)
+        
         # Save to S3
         jobs_prefix = f"{settings.S3_PREFIX}jobs/"
-        s3_key = f"{jobs_prefix}{final_job_id}.json"
+        s3_key = f"{jobs_prefix}{filename}"
         
         if settings.USE_MOCK:
             # In mock mode, save to local file
             local_dir = "jobs"
             os.makedirs(local_dir, exist_ok=True)
-            local_file = os.path.join(local_dir, f"{final_job_id}.json")
+            local_file = os.path.join(local_dir, filename)
+            
+            # If old file exists with different name (based on old title), delete it
+            # Search for old file with job_id pattern
+            if os.path.exists(local_dir): 
+                for old_file in os.listdir(local_dir):
+                    if old_file.endswith(f"-{final_job_id}.json") and old_file != filename:
+                        old_path = os.path.join(local_dir, old_file)
+                        try:
+                            os.remove(old_path)
+                            logger.info(f"MOCK: Removed old job file: {old_file}")
+                        except Exception as e:
+                            logger.warning(f"MOCK: Failed to remove old file {old_file}: {e}")
             try:
                 with open(local_file, 'w', encoding='utf-8') as f:
                     json.dump(job_data, f, ensure_ascii=False, indent=2)
@@ -430,5 +591,130 @@ async def update_job(job_id: str, request: JobUpdateRequest):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to update job: {str(e)}"
+        )
+
+
+@router.delete("/{job_id}", summary="Delete job by ID", tags=["Jobs"])
+async def delete_job(job_id: str):
+    """
+    Delete a job by ID
+    Deletes from both S3 and OpenSearch
+    """
+    try:
+        from app.clients.s3_client import s3_client
+        from app.clients.opensearch_client import opensearch_client
+        from app.core.config import settings
+        
+        deleted_from_opensearch = False
+        deleted_from_s3 = False
+        errors = []
+        
+        # Delete from OpenSearch (try to delete, but not required if already deleted)
+        try:
+            if not settings.USE_MOCK:
+                deleted_from_opensearch = opensearch_client.delete_document(
+                    index_name="jobs_index",
+                    doc_id=job_id
+                )
+            else:
+                # In mock mode, delete from mock storage
+                deleted_from_opensearch = opensearch_client.delete_document(
+                    index_name="jobs_index",
+                    doc_id=job_id
+                )
+            
+            if deleted_from_opensearch:
+                logger.info(f"Deleted job {job_id} from OpenSearch")
+            else:
+                logger.info(f"Job {job_id} not found in OpenSearch (may have been already deleted)")
+        except Exception as e:
+            error_msg = f"Failed to delete job {job_id} from OpenSearch: {str(e)}"
+            logger.warning(error_msg)
+            # Don't add to errors - OpenSearch deletion is optional if job already deleted
+        
+        # Find and delete from S3 (MUST succeed)
+        jobs_prefix = f"{settings.S3_PREFIX}jobs/"
+        s3_file_found = False
+        
+        try:
+            if settings.USE_MOCK:
+                # In mock mode, delete local file (support both old format: {job_id}.json and new format: {title}-{job_id}.json)
+                local_dir = "jobs"
+                if os.path.exists(local_dir):
+                    for filename in os.listdir(local_dir):
+                        # Check both formats: {job_id}.json and {title}-{job_id}.json
+                        if filename == f"{job_id}.json" or filename.endswith(f"-{job_id}.json"):
+                            local_file = os.path.join(local_dir, filename)
+                            try:
+                                os.remove(local_file)
+                                deleted_from_s3 = True
+                                s3_file_found = True
+                                logger.info(f"MOCK: Deleted job {job_id} from {local_file}")
+                                break
+                            except Exception as e:
+                                error_msg = f"MOCK: Failed to delete job file: {str(e)}"
+                                logger.error(error_msg)
+                                errors.append(error_msg)
+                
+                if not s3_file_found:
+                    errors.append(f"Job {job_id} file not found in local jobs directory")
+            else:
+                # Delete from S3 - search for file with job_id pattern
+                paginator = s3_client.client.get_paginator('list_objects_v2')
+                for page in paginator.paginate(Bucket=settings.S3_BUCKET_NAME, Prefix=jobs_prefix):
+                    if 'Contents' in page:
+                        for obj in page['Contents']:
+                            key = obj['Key']
+                            # Extract filename from key
+                            filename = key.split('/')[-1]
+                            # Support both old format: {job_id}.json and new format: {title}-{job_id}.json
+                            if filename == f"{job_id}.json" or filename.endswith(f"-{job_id}.json"):
+                                s3_file_found = True
+                                try:
+                                    s3_client.client.delete_object(
+                                        Bucket=settings.S3_BUCKET_NAME,
+                                        Key=key
+                                    )
+                                    deleted_from_s3 = True
+                                    logger.info(f"Deleted job {job_id} from S3: {key}")
+                                    break
+                                except Exception as e:
+                                    error_msg = f"Failed to delete job {job_id} from S3: {str(e)}"
+                                    logger.error(error_msg)
+                                    errors.append(error_msg)
+                        if deleted_from_s3:
+                            break
+                
+                if not s3_file_found:
+                    errors.append(f"Job {job_id} file not found in S3")
+        except Exception as e:
+            error_msg = f"Failed to delete job {job_id} from S3: {str(e)}"
+            logger.error(error_msg)
+            errors.append(error_msg)
+        
+        # S3 deletion is required, OpenSearch deletion is optional (may have been already deleted)
+        if deleted_from_s3:
+            return {
+                "message": f"Job {job_id} deleted successfully",
+                "job_id": job_id,
+                "deleted_from_opensearch": deleted_from_opensearch,
+                "deleted_from_s3": True
+            }
+        else:
+            # If S3 deletion failed, return error with details
+            error_detail = f"Failed to delete job {job_id} from S3. Errors: {'; '.join(errors)}"
+            logger.error(error_detail)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=error_detail
+            )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Delete job error: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to delete job: {str(e)}"
         )
 
