@@ -228,7 +228,7 @@ class BedrockClient:
             # Format 4: Direct JSON in response
             if not result_text and 'ranked_candidates' in response_body:
                 # Response is already the JSON we need
-                reranked = self._parse_rerank_results(response_body, candidates)
+                reranked = self._parse_rerank_results(response_body, candidates, top_k)
                 logger.info(f"Reranked {len(reranked)} candidates")
                 return reranked
             
@@ -258,7 +258,7 @@ class BedrockClient:
                 raise RerankError(f"Invalid JSON in response: {str(e)}")
             
             # Validate and format results
-            reranked = self._parse_rerank_results(result_json, candidates)
+            reranked = self._parse_rerank_results(result_json, candidates, top_k)
             logger.info(f"Reranked {len(reranked)} candidates")
             return reranked
                 
@@ -660,12 +660,16 @@ class BedrockClient:
         
         return prompt
     
-    def _parse_rerank_results(self, result_json: Dict, original_candidates: List[Dict]) -> List[Dict]:
+    def _parse_rerank_results(self, result_json: Dict, original_candidates: List[Dict], top_k: int = 10) -> List[Dict]:
         """Parse and validate rerank results"""
         reranked = []
         ranked_list = result_json.get("ranked_candidates", [])
         
-        for item in ranked_list[:10]:  # Limit to top 10
+        # Limit to top_k หรือจำนวนที่มีจริง (whichever is smaller)
+        # ถ้าขอ 10 แต่มีแค่ 2 ก็แสดงแค่ 2
+        max_items = min(top_k, len(ranked_list), len(original_candidates))
+        
+        for item in ranked_list[:max_items]:
             idx = item.get("candidate_index", 0)
             if 0 <= idx < len(original_candidates):
                 candidate = original_candidates[idx].copy()
@@ -679,6 +683,7 @@ class BedrockClient:
                 })
                 reranked.append(candidate)
         
+        logger.info(f"Parsed {len(reranked)} reranked results (requested top_k={top_k}, available={len(ranked_list)}, candidates={len(original_candidates)})")
         return reranked
 
 

@@ -186,8 +186,8 @@ def custom_openapi():
     for path, methods in openapi_schema["paths"].items():
         for method, operation in methods.items():
             if method.lower() in ["get", "post", "put", "delete", "patch"]:
-                # Skip login and health endpoints (they don't need auth)
-                if "/auth/login" in path or "/health" in path or path == "/":
+                # Skip login, health, and stats endpoints (they don't need auth)
+                if "/auth/login" in path or "/health" in path or "/stats" in path or path == "/":
                     continue
                 # Add security requirement
                 if "security" not in operation:

@@ -243,8 +243,10 @@ class MatchingService:
                     "experience_summary": item.get("text_excerpt", "")[:300],
                     "match_score": item.get("vector_score", 0.0),
                     "rerank_score": item.get("rerank_score", 0.0),
-                    "fit_reasons": item.get("rerank_reason", ""),
+                    "reasons": item.get("rerank_reason", ""),  # Changed from fit_reasons to reasons for consistency
+                    "fit_reasons": item.get("rerank_reason", ""),  # Keep for backward compatibility
                     "risks": item.get("gaps", []),
+                    "gaps": item.get("gaps", []),  # Add gaps for consistency with Mode A
                     "highlighted_skills": item.get("highlighted_skills", []),
                     "suggested_next_step": "ติดต่อเพื่อสัมภาษณ์" if item.get("rerank_score", 0) > 0.7 else "พิจารณาเพิ่มเติม",
                     "metadata": item.get("metadata", {})
