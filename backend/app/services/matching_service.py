@@ -72,15 +72,26 @@ class MatchingService:
             
             logger.info(f"Found {len(candidates)} candidates from vector search")
             
+            # Log vector search scores for debugging
+            if candidates:
+                top_scores = [c.get("_score", "N/A") for c in candidates[:5]]
+                logger.info(f"Top 5 vector search scores: {top_scores}")
+                logger.info(f"Top candidate: title={candidates[0].get('title', 'N/A')}, score={candidates[0].get('_score', 'N/A')}, has_embeddings={'embeddings' in candidates[0]}")
+            
             # 3. Prepare candidates for reranking
             candidates_for_rerank = []
             for candidate in candidates[:top_k_initial]:
+                vector_score = candidate.get("_score", 0.0)
+                # Log if score is 0 or missing
+                if vector_score == 0.0 or vector_score is None:
+                    logger.warning(f"Candidate {candidate.get('_id', 'N/A')} has zero or missing vector score. Has embeddings: {'embeddings' in candidate}")
+                
                 candidates_for_rerank.append({
                     "candidate_index": len(candidates_for_rerank),
                     "title": candidate.get("title", "N/A"),
                     "text_excerpt": candidate.get("text_excerpt", ""),
                     "metadata": candidate.get("metadata", {}),
-                    "vector_score": candidate.get("_score", 0.0),
+                    "vector_score": vector_score,
                     "job_id": candidate.get("_id", "")
                 })
             
@@ -190,15 +201,26 @@ class MatchingService:
                 
                 logger.info(f"Found {len(candidates)} candidates from vector search")
             
+            # Log vector search scores for debugging
+            if candidates:
+                top_scores = [c.get("_score", "N/A") for c in candidates[:5]]
+                logger.info(f"Top 5 vector search scores: {top_scores}")
+                logger.info(f"Top candidate: name={candidates[0].get('name', 'N/A')}, score={candidates[0].get('_score', 'N/A')}, has_embeddings={'embeddings' in candidates[0]}")
+            
             # 3. Prepare candidates for reranking
             candidates_for_rerank = []
             for candidate in candidates[:top_k_initial]:
+                vector_score = candidate.get("_score", 0.0)
+                # Log if score is 0 or missing
+                if vector_score == 0.0 or vector_score is None:
+                    logger.warning(f"Candidate {candidate.get('_id', 'N/A')} has zero or missing vector score. Has embeddings: {'embeddings' in candidate}")
+                
                 candidates_for_rerank.append({
                     "candidate_index": len(candidates_for_rerank),
                     "title": candidate.get("name", "N/A"),
                     "text_excerpt": candidate.get("text_excerpt", ""),
                     "metadata": candidate.get("metadata", {}),
-                    "vector_score": candidate.get("_score", 0.0),
+                    "vector_score": vector_score,
                     "resume_id": candidate.get("_id", "") or candidate.get("id", "")  # Support both _id and id fields
                 })
             

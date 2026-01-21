@@ -225,135 +225,177 @@ class OpenSearchClient:
                 result_copy = result.copy()
                 result_copy['_score'] = 0.95 - (i * 0.05)
                 results_copy.append(result_copy)
-            logger.info(f"MOCK: Returning {len(results_copy)} results")
+            logger.info(f"MOCK: Returning {len(results_copy)} results with scores: {[r.get('_score', 0) for r in results_copy[:3]]}")
             return results_copy
         
         try:
-            # Try KNN search first
-            # Build query based on whether filters are provided
-            if filters:
-                # When filters are provided, use bool query with knn in must clause
-                query = {
-                    "size": top_k,
-                    "query": {
-                        "bool": {
-                            "must": [
-                                {
-                                    "knn": {
-                                        "embeddings": {
-                                            "vector": query_vector,
-                                            "k": top_k
-                                        }
-                                    }
-                                }
-                            ],
-                            "filter": filters
-                        }
-                    },
-                    "_source": True
+            # Use script_score to calculate cosine similarity
+            # This ensures we always get proper similarity scores
+            import math
+            
+            # Calculate query vector norm
+            query_norm = math.sqrt(sum(x * x for x in query_vector))
+            if query_norm == 0.0:
+                logger.error("Query vector norm is 0.0 - cannot perform vector search")
+                raise OpenSearchError("Query vector is zero vector")
+            
+            # Script to calculate cosine similarity
+            script_source = """
+                if (doc['embeddings'].size() != params.queryVector.size()) {
+                    return 0.0;
                 }
-            else:
-                # No filters - use simple knn query
-                query = {
-                    "size": top_k,
-                    "query": {
-                        "knn": {
-                            "embeddings": {
-                                "vector": query_vector,
-                                "k": top_k
+                double dotProduct = 0.0;
+                double docNorm = 0.0;
+                for (int i = 0; i < doc['embeddings'].size(); i++) {
+                    dotProduct += doc['embeddings'][i] * params.queryVector[i];
+                    docNorm += doc['embeddings'][i] * doc['embeddings'][i];
+                }
+                double docNormSqrt = Math.sqrt(docNorm);
+                double queryNorm = params.queryNorm;
+                if (docNormSqrt == 0.0 || queryNorm == 0.0) {
+                    return 0.0;
+                }
+                return dotProduct / (docNormSqrt * queryNorm);
+            """
+            
+            # Build base query
+            base_query = {
+                "match_all": {}
+            }
+            
+            # Add filters if provided
+            if filters:
+                base_query = {
+                    "bool": {
+                        "filter": filters
+                    }
+                }
+            
+            query = {
+                "size": top_k,
+                "query": {
+                    "script_score": {
+                        "query": base_query,
+                        "script": {
+                            "source": script_source,
+                            "params": {
+                                "queryVector": query_vector,
+                                "queryNorm": query_norm
                             }
                         }
-                    },
-                    "_source": True
-                }
+                    }
+                },
+                "_source": True
+            }
             
             try:
                 response = self.client.search(index=index_name, body=query)
                 
+                # Debug: Log raw response
+                logger.debug(f"OpenSearch response keys: {list(response.keys())}")
+                if 'hits' in response:
+                    logger.debug(f"Total hits: {response['hits'].get('total', {}).get('value', 'N/A')}")
+                
                 results = []
                 for hit in response['hits']['hits']:
                     result = hit['_source']
-                    result['_score'] = hit['_score']
+                    score = hit.get('_score', 0.0)
+                    
+                    # If score is 0 or missing, try to calculate cosine similarity manually
+                    if score == 0.0 or score is None:
+                        if 'embeddings' in result and isinstance(result['embeddings'], list):
+                            try:
+                                import math
+                                doc_emb = result['embeddings']
+                                if len(doc_emb) == len(query_vector):
+                                    # Calculate cosine similarity manually
+                                    dot_product = sum(a * b for a, b in zip(doc_emb, query_vector))
+                                    doc_norm = math.sqrt(sum(x * x for x in doc_emb))
+                                    query_norm_val = math.sqrt(sum(x * x for x in query_vector))
+                                    if doc_norm > 0 and query_norm_val > 0:
+                                        score = dot_product / (doc_norm * query_norm_val)
+                                        logger.info(f"Calculated manual cosine similarity: {score:.4f} for doc {hit.get('_id', 'N/A')}")
+                                    else:
+                                        logger.warning(f"Zero norm detected: doc_norm={doc_norm}, query_norm={query_norm_val}")
+                                else:
+                                    logger.warning(f"Dimension mismatch: doc={len(doc_emb)}, query={len(query_vector)}")
+                            except Exception as calc_error:
+                                logger.error(f"Error calculating manual score: {calc_error}")
+                    
+                    # Debug: Log raw hit data
+                    logger.debug(f"Hit _score: {score}, _id: {hit.get('_id', 'N/A')}, has embeddings: {'embeddings' in result}")
+                    
+                    result['_score'] = score
                     result['_id'] = hit['_id']
                     results.append(result)
                 
-                logger.info(f"Vector search returned {len(results)} results")
+                # Sort by score descending (script_score should already be sorted, but ensure it)
+                results.sort(key=lambda x: x.get('_score', 0), reverse=True)
+                results = results[:top_k]
+                
+                # Log scores for debugging
+                if results:
+                    top_scores = [r.get('_score', 0.0) for r in results[:3]]
+                    logger.info(f"Vector search returned {len(results)} results. Top 3 scores: {top_scores}")
+                    if top_scores[0] == 0.0:
+                        logger.warning(f"⚠️ Top result has score=0.0! Check if documents have embeddings field with correct dimension.")
+                        # Log first result details for debugging
+                        if results[0].get('embeddings'):
+                            emb_dim = len(results[0]['embeddings']) if isinstance(results[0]['embeddings'], list) else 'N/A'
+                            logger.warning(f"First result embeddings dimension: {emb_dim}, query vector dimension: {len(query_vector)}")
+                        else:
+                            logger.error(f"❌ First result has NO embeddings field! Document keys: {list(results[0].keys())}")
+                else:
+                    logger.warning(f"Vector search returned 0 results")
+                
                 return results
                 
-            except Exception as knn_error:
-                error_msg = str(knn_error)
-                # If ANN structure not built, fallback to script_score query
-                if "not built for ANN search" in error_msg or "ANN" in error_msg:
-                    logger.warning(f"ANN structure not ready, using fallback script_score query")
-                    
-                    # Fallback: Use script_score to calculate cosine similarity manually
-                    import math
-                    
-                    # Calculate query vector norm
-                    query_norm = math.sqrt(sum(x * x for x in query_vector))
-                    
-                    # Script to calculate cosine similarity
-                    script_source = f"""
-                    double dotProduct = 0.0;
-                    double docNorm = 0.0;
-                    if (doc['embeddings'].size() != params.queryVector.size()) {{
-                        return 0.0;
-                    }}
-                    for (int i = 0; i < doc['embeddings'].size(); i++) {{
-                        dotProduct += doc['embeddings'][i] * params.queryVector[i];
-                        docNorm += doc['embeddings'][i] * doc['embeddings'][i];
-                    }}
-                    double docNormSqrt = Math.sqrt(docNorm);
-                    double queryNorm = params.queryNorm;
-                    if (docNormSqrt == 0.0 || queryNorm == 0.0) {{
-                        return 0.0;
-                    }}
-                    return dotProduct / (docNormSqrt * queryNorm);
-                    """
-                    
-                    fallback_query = {
-                        "size": top_k,
-                        "query": {
-                            "script_score": {
-                                "query": {"match_all": {}},
-                                "script": {
-                                    "source": script_source,
-                                    "params": {
-                                        "queryVector": query_vector,
-                                        "queryNorm": query_norm
-                                    }
-                                }
-                            }
-                        },
-                        "_source": True
-                    }
-                    
-                    if filters:
-                        fallback_query["query"]["script_score"]["query"] = {"bool": {"filter": filters}}
-                    
+            except Exception as search_error:
+                error_msg = str(search_error)
+                logger.error(f"Vector search failed: {error_msg}")
+                
+                # Check if it's a script compilation error (might need different script format)
+                if "script" in error_msg.lower() or "painless" in error_msg.lower():
+                    logger.warning("Script score query failed, trying alternative format...")
+                    # Try alternative script format (OpenSearch 1.x vs 2.x)
                     try:
-                        response = self.client.search(index=index_name, body=fallback_query)
+                        # Alternative: Try using knn query format (OpenSearch 2.x)
+                        knn_query = {
+                            "size": top_k,
+                            "query": {"match_all": {}},
+                            "knn": {
+                                "field": "embeddings",
+                                "query_vector": query_vector,
+                                "k": top_k,
+                                "num_candidates": top_k * 2
+                            },
+                            "_source": True
+                        }
+                        
+                        if filters:
+                            knn_query["query"] = {"bool": {"filter": filters}}
+                        
+                        response = self.client.search(index=index_name, body=knn_query)
                         
                         results = []
                         for hit in response['hits']['hits']:
                             result = hit['_source']
-                            result['_score'] = hit['_score']
+                            score = hit.get('_score', 0.0)
+                            result['_score'] = score
                             result['_id'] = hit['_id']
                             results.append(result)
                         
-                        # Sort by score descending
-                        results.sort(key=lambda x: x.get('_score', 0), reverse=True)
-                        results = results[:top_k]
+                        if results:
+                            top_scores = [r.get('_score', 0.0) for r in results[:3]]
+                            logger.info(f"Alternative KNN query returned {len(results)} results. Top 3 scores: {top_scores}")
                         
-                        logger.info(f"Fallback vector search returned {len(results)} results")
                         return results
                         
-                    except Exception as fallback_error:
-                        logger.error(f"Fallback vector search also failed: {fallback_error}")
-                        raise OpenSearchError(f"Vector search failed (both KNN and fallback): {str(fallback_error)}")
+                    except Exception as alt_error:
+                        logger.error(f"Alternative KNN query also failed: {alt_error}")
+                        raise OpenSearchError(f"Vector search failed: {str(search_error)}")
                 else:
-                    # Other error, raise it
-                    raise
+                    raise OpenSearchError(f"Vector search failed: {str(search_error)}")
             
         except Exception as e:
             logger.error(f"Error in vector search: {e}")
