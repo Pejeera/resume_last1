@@ -193,4 +193,3 @@ if os.getenv("DEBUG", "false").lower() == "true":
     print(f"  AWS_REGION: {settings.AWS_REGION}")
     print(f"  OPENSEARCH_ENDPOINT: {settings.OPENSEARCH_ENDPOINT}")
     print(f"  S3_BUCKET_NAME: {settings.S3_BUCKET_NAME}")
-

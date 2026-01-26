@@ -529,8 +529,215 @@ def lambda_handler(event, context):
                 traceback.print_exc()
                 return response(500, {"error": str(e)})
 
+        # ---- upload job file endpoint ----
+        if path == "/api/jobs/upload" and method == "POST":
+            try:
+                import base64
+                import uuid
+                from datetime import datetime
+                
+                # Get body and check if base64 encoded
+                body = event.get("body", "")
+                is_base64 = event.get("isBase64Encoded", False)
+                
+                if is_base64:
+                    body = base64.b64decode(body).decode('utf-8')
+                
+                # Parse multipart/form-data
+                # API Gateway passes multipart as a string, need to parse it
+                content_type = event.get("headers", {}).get("content-type", "") or event.get("headers", {}).get("Content-Type", "")
+                
+                if "multipart/form-data" not in content_type.lower():
+                    return response(400, {"error": "Content-Type must be multipart/form-data"})
+                
+                # Extract boundary from content-type
+                boundary = None
+                for part in content_type.split(";"):
+                    part = part.strip()
+                    if part.startswith("boundary="):
+                        boundary = part.split("=", 1)[1]
+                        break
+                
+                if not boundary:
+                    return response(400, {"error": "Could not find boundary in Content-Type"})
+                
+                # Parse multipart data
+                parts = body.split(f"--{boundary}")
+                file_content = None
+                filename = None
+                
+                for part in parts:
+                    if "Content-Disposition" in part or "content-disposition" in part:
+                        # Extract filename
+                        if 'filename=' in part:
+                            filename_start = part.find('filename="') + 10
+                            filename_end = part.find('"', filename_start)
+                            if filename_end > filename_start:
+                                filename = part[filename_start:filename_end]
+                        
+                        # Extract file content (after headers and blank line)
+                        header_end = part.find("\r\n\r\n")
+                        if header_end == -1:
+                            header_end = part.find("\n\n")
+                        
+                        if header_end != -1:
+                            file_content = part[header_end:].strip()
+                            # Remove trailing boundary markers
+                            file_content = file_content.rstrip(f"--{boundary}--").strip()
+                            break
+                
+                if not file_content:
+                    return response(400, {"error": "No file content found in request"})
+                
+                if not filename:
+                    return response(400, {"error": "No filename provided"})
+                
+                # Check file extension
+                if not filename.lower().endswith('.json'):
+                    return response(400, {"error": "File must be a JSON file (.json)"})
+                
+                # Parse JSON file content
+                try:
+                    job_data = json.loads(file_content)
+                except json.JSONDecodeError as e:
+                    return response(400, {"error": f"Invalid JSON file: {str(e)}"})
+                
+                # Validate required fields
+                if "title" not in job_data:
+                    return response(400, {"error": "JSON file must contain 'title' field"})
+                
+                if "description" not in job_data:
+                    return response(400, {"error": "JSON file must contain 'description' field"})
+                
+                # Extract metadata if present
+                metadata = job_data.get("metadata")
+                if not metadata and any(key in job_data for key in ["location", "department", "skills", "requirements"]):
+                    metadata = {}
+                    for key in ["location", "department", "employment_type", "experience_years", 
+                               "skills", "responsibilities", "requirements", "scoring_weights"]:
+                        if key in job_data:
+                            metadata[key] = job_data[key]
+                
+                # Generate job_id
+                job_id = job_data.get("_id") or job_data.get("id") or job_data.get("job_id") or str(uuid.uuid4())
+                
+                # Prepare job document
+                job_document = {
+                    "id": job_id,
+                    "_id": job_id,
+                    "job_id": job_id,
+                    "title": job_data["title"],
+                    "description": job_data["description"],
+                    "text_excerpt": job_data.get("description", "")[:500],
+                    "created_at": job_data.get("created_at", datetime.utcnow().isoformat()),
+                    "metadata": metadata or {}
+                }
+                
+                # Add metadata fields to root level for compatibility
+                if metadata:
+                    for key in ["location", "department", "employment_type", "experience_years", 
+                               "skills", "responsibilities", "requirements", "scoring_weights"]:
+                        if key in metadata:
+                            job_document[key] = metadata[key]
+                
+                # Save to S3
+                jobs_prefix = f"{RESUME_PREFIX}jobs/"
+                # Generate filename from title
+                title_safe = "".join(c for c in job_data["title"] if c.isalnum() or c in (' ', '-', '_')).strip()
+                title_safe = title_safe.replace(' ', '-')[:50]  # Limit length
+                s3_filename = f"{title_safe}-{job_id}.json"
+                s3_key = f"{jobs_prefix}{s3_filename}"
+                
+                s3.put_object(
+                    Bucket=RESUME_BUCKET,
+                    Key=s3_key,
+                    Body=json.dumps(job_document, ensure_ascii=False, indent=2).encode('utf-8'),
+                    ContentType='application/json'
+                )
+                
+                print(f"Uploaded job {job_id} to S3: {s3_key}")
+                
+                # Generate embedding
+                embedding_generated = False
+                try:
+                    job_title = job_document.get('title', '')
+                    job_location = job_document.get('metadata', {}).get('location', '') if isinstance(job_document.get('metadata'), dict) else ''
+                    job_description = job_document.get('description', '')
+                    
+                    full_text = extract_important_job_info(job_title, job_location, job_description, max_chars=2048)
+                    
+                    embedding_body = {
+                        "texts": [full_text],
+                        "input_type": "search_document"
+                    }
+                    embedding_response = bedrock_runtime.invoke_model(
+                        modelId=BEDROCK_EMBEDDING_MODEL,
+                        body=json.dumps(embedding_body)
+                    )
+                    embedding_result = json.loads(embedding_response["body"].read())
+                    job_document["embeddings"] = embedding_result.get("embeddings", [])[0]
+                    embedding_generated = True
+                    print(f"Generated embedding for job {job_id} (dimension: {len(job_document['embeddings'])})")
+                except Exception as e:
+                    print(f"Warning: Failed to generate embedding for job {job_id}: {e}")
+                    import traceback
+                    traceback.print_exc()
+                
+                # Index to OpenSearch
+                try:
+                    index_doc_url = f"https://{OPENSEARCH_HOST}/jobs_index/_doc/{job_id}"
+                    index_res = requests.put(
+                        index_doc_url,
+                        auth=opensearch_auth,
+                        headers={"Content-Type": "application/json"},
+                        json=job_document,
+                        timeout=10
+                    )
+                    
+                    if index_res.status_code in [200, 201]:
+                        print(f"Indexed job {job_id} to OpenSearch")
+                        return response(200, {
+                            "job_id": job_id,
+                            "title": job_document["title"],
+                            "created_at": job_document["created_at"],
+                            "message": f"Job uploaded successfully from {filename}",
+                            "s3_key": s3_key,
+                            "opensearch_indexed": True,
+                            "embedding_generated": embedding_generated
+                        })
+                    else:
+                        print(f"Warning: Failed to index OpenSearch for job {job_id}: {index_res.status_code} - {index_res.text}")
+                        return response(200, {
+                            "job_id": job_id,
+                            "title": job_document["title"],
+                            "created_at": job_document["created_at"],
+                            "message": f"Job uploaded successfully from {filename} (saved to S3, OpenSearch indexing may happen via S3 event)",
+                            "s3_key": s3_key,
+                            "opensearch_indexed": False,
+                            "opensearch_error": f"{index_res.status_code}: {index_res.text[:200]}"
+                        })
+                except Exception as e:
+                    print(f"Error indexing OpenSearch for job {job_id}: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    return response(200, {
+                        "job_id": job_id,
+                        "title": job_document["title"],
+                        "created_at": job_document["created_at"],
+                        "message": f"Job uploaded successfully from {filename} (saved to S3, OpenSearch indexing may happen via S3 event)",
+                        "s3_key": s3_key,
+                        "opensearch_indexed": False,
+                        "opensearch_error": str(e)
+                    })
+                
+            except Exception as e:
+                print(f"Error uploading job file: {str(e)}")
+                import traceback
+                traceback.print_exc()
+                return response(500, {"error": f"Failed to upload job: {str(e)}"})
+
         # ---- update job in S3 (will trigger S3 event → auto update embedding in OpenSearch) ----
-        if path.startswith("/api/jobs/") and path != "/api/jobs/list" and path != "/api/jobs/search_by_resume" and path != "/api/jobs/sync_from_s3" and method in ["PUT", "POST"]:
+        if path.startswith("/api/jobs/") and path != "/api/jobs/list" and path != "/api/jobs/search_by_resume" and path != "/api/jobs/sync_from_s3" and path != "/api/jobs/upload" and method in ["PUT", "POST"]:
             try:
                 # Extract job_id from path (e.g., /api/jobs/job123)
                 job_id = path.split("/api/jobs/")[-1]

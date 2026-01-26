@@ -632,15 +632,23 @@ class BedrockClient:
 {candidates_text}
 
 **งานของคุณ:**
-1. วิเคราะห์และจัดอันดับผู้สมัคร Top {top_k} ที่เหมาะสมที่สุด
-2. ให้เหตุผลสั้นๆ กระชับ (2-3 ประโยค) ว่าทำไมถึงเหมาะ
-3. ระบุจุดเด่น (highlighted_skills) และจุดที่ขาด (gaps) ถ้ามี
+1. วิเคราะห์และจัดอันดับผู้สมัครทุกคนที่ให้มา โดยต้องให้คะแนน rerank_score (0.0-1.0) กับผู้สมัครทุกคน (ห้ามตัดผู้สมัครออกเอง) และใช้คะแนนนี้ในการเลือก Top {top_k} ที่เหมาะสมที่สุด
+2. เขียน reason แบบมีโครงสร้าง แยกเป็นหัวข้อชัดเจน ภายในข้อความเดียวกัน (string เดียว) เช่น:
+   - "ภาพรวมความเหมาะสม:" อธิบายภาพรวม 1-2 ประโยค
+   - "ทักษะที่เกี่ยวข้อง:" สรุปสกิลหลัก ๆ ที่ตรงกับงาน
+   - "ประสบการณ์ที่เกี่ยวข้อง:" ยกตัวอย่างประสบการณ์ / โปรเจกต์ / domain ที่ตรง
+   - "ตำแหน่งและระดับ:" อธิบายความเหมาะสมของระดับตำแหน่ง (เช่น junior / senior / manager) ถ้าพออนุมานได้
+   - "ที่ตั้ง / รูปแบบงาน:" ถ้ามีข้อมูลเรื่องสถานที่ทำงาน, remote, hybrid ฯลฯ ให้พูดถึงด้วย ถ้าไม่มีให้ข้ามได้
+   - "ความเสี่ยง / ช่องว่าง:" อธิบายสิ่งที่อาจยังขาดเมื่อเทียบกับ JD
+3. ระบุจุดเด่น (highlighted_skills) และจุดที่ขาด (gaps) เป็นรายการ (list) ให้ชัดเจน
+4. ถ้าเห็นว่าควรถามอะไรเพิ่มในการสัมภาษณ์ ให้ใส่ใน recommended_questions อย่างน้อย 2-3 ข้อ
 
 **ข้อกำหนด:**
-- ห้ามสร้างข้อมูลที่ไม่มีใน candidates
-- ถ้าข้อมูลไม่พอ ให้ระบุว่า "ข้อมูลไม่เพียงพอ"
-- ใช้ภาษาไทยในการให้เหตุผล
-- คะแนน rerank_score ควรอยู่ระหว่าง 0.0-1.0
+- ห้ามสร้างข้อมูลที่ไม่มีใน candidates (ต้องอิงจากข้อความที่ให้มาเท่านั้น)
+- ถ้าข้อมูลไม่พอ ให้ระบุใน reason ว่า "ข้อมูลไม่เพียงพอ" และอย่าเดา
+- ใช้ภาษาไทยในการให้เหตุผลทั้งหมด
+- คะแนน rerank_score ควรอยู่ระหว่าง 0.0-1.0 (ยิ่งใกล้ 1.0 แปลว่ายิ่งเหมาะสม)
+ - ต้องคืนค่า ranked_candidates ให้มี 1 แถวต่อ 1 ผู้สมัครที่ให้มา (ครบทุก candidate_index ที่อยู่ในรายการผู้สมัครด้านบน) แม้ว่าบางคนจะได้คะแนนต่ำหรือไม่เหมาะสม
 
 **รูปแบบผลลัพธ์ (JSON):**
 {{
@@ -665,13 +673,19 @@ class BedrockClient:
         reranked = []
         ranked_list = result_json.get("ranked_candidates", [])
         
-        # Limit to top_k หรือจำนวนที่มีจริง (whichever is smaller)
-        # ถ้าขอ 10 แต่มีแค่ 2 ก็แสดงแค่ 2
-        max_items = min(top_k, len(ranked_list), len(original_candidates))
+        # ต้องการจำนวนผลลัพธ์สูงสุดเท่ากับ top_k หรือจำนวนผู้สมัครที่มีจริง (whichever is smaller)
+        desired_count = min(top_k, len(original_candidates))
         
-        for item in ranked_list[:max_items]:
+        used_indices = set()
+        
+        # 1) ใส่ข้อมูลตามที่โมเดลส่งมา (ถ้ามี)
+        for item in ranked_list:
+            if len(reranked) >= desired_count:
+                break
             idx = item.get("candidate_index", 0)
-            if 0 <= idx < len(original_candidates):
+            if not isinstance(idx, int):
+                continue
+            if 0 <= idx < len(original_candidates) and idx not in used_indices:
                 candidate = original_candidates[idx].copy()
                 candidate.update({
                     "rerank_score": float(item.get("rerank_score", 0.0)),
@@ -682,8 +696,38 @@ class BedrockClient:
                     "rank": len(reranked) + 1
                 })
                 reranked.append(candidate)
+                used_indices.add(idx)
         
-        logger.info(f"Parsed {len(reranked)} reranked results (requested top_k={top_k}, available={len(ranked_list)}, candidates={len(original_candidates)})")
+        # 2) ถ้าโมเดลไม่คืนมาครบทุก candidate (เช่น เลือกมาแค่ 1 จาก 2)
+        #    ให้เติมผู้สมัครที่ขาดหายเข้าไปด้วยคะแนนต่ำ ๆ เพื่อให้ UI แสดงครบ
+        if len(reranked) < desired_count:
+            for idx in range(len(original_candidates)):
+                if len(reranked) >= desired_count:
+                    break
+                if idx in used_indices:
+                    continue
+                
+                base_candidate = original_candidates[idx].copy()
+                vector_score = float(base_candidate.get("vector_score", 0.0))
+                
+                # ให้คะแนนต่ำมาก แต่ยังอยู่ในช่วง 0.0-1.0
+                fallback_score = max(0.0, min(vector_score * 0.3, 0.3))
+                
+                base_candidate.update({
+                    "rerank_score": fallback_score,
+                    "rerank_reason": "โมเดลไม่ได้จัดอันดับผู้สมัครคนนี้โดยตรง จึงให้คะแนนต่ำและแสดงเป็นตัวเลือกเพิ่มเติม เพื่อให้เห็นผู้สมัครครบทุกคนที่เลือกไว้",
+                    "highlighted_skills": base_candidate.get("highlighted_skills", []),
+                    "gaps": base_candidate.get("gaps", []),
+                    "recommended_questions": base_candidate.get("recommended_questions", []),
+                    "rank": len(reranked) + 1
+                })
+                reranked.append(base_candidate)
+        
+        logger.info(
+            f"Parsed {len(reranked)} reranked results "
+            f"(requested top_k={top_k}, ranked_from_model={len(ranked_list)}, "
+            f"candidates={len(original_candidates)}, desired_count={desired_count})"
+        )
         return reranked
 
 
